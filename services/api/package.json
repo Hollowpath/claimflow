@@ -1,0 +1,20 @@
+{
+  "name": "@claimflow/api",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --conditions=source --clear-screen=false src/main.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js --serve-web",
+    "reset-data": "tsx --conditions=source src/reset-data.ts",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@claimflow/contracts": "0.2.0",
+    "@claimflow/domain": "0.2.0",
+    "zod": "^4.6.6"
+  }
+}

@@ -1,0 +1,828 @@
+openapi: 3.1.0
+info:
+  title: ClaimFlow API
+  version: 1.0.0
+  description: >
+    Employee expense and reimbursement API: claims, receipts, manager review,
+    category policy, and payment. In the local development runtime, sessions
+    use development sign-in with a signed cookie that selects a sample user
+    (not production authentication); the server always loads roles and
+    manager assignments itself. See docs/api.md for conventions.
+servers:
+  - url: http://localhost:3001/api/v1
+  - url: http://localhost:5173/api/v1
+    description: Through the Vite development proxy
+security:
+  - session: []
+
+tags:
+  - name: Session
+  - name: Categories
+  - name: Claims
+  - name: Lifecycle
+  - name: Receipts
+
+# Responses shared by every lifecycle action, reused below via a YAML alias.
+x-action-responses: &actionResponses
+  '200': { $ref: '#/components/responses/Claim' }
+  '400': { $ref: '#/components/responses/ValidationFailed' }
+  '401': { $ref: '#/components/responses/Unauthenticated' }
+  '403': { $ref: '#/components/responses/Forbidden' }
+  '404': { $ref: '#/components/responses/NotFound' }
+  '409': { $ref: '#/components/responses/Conflict' }
+
+paths:
+  /health:
+    get:
+      tags: [Session]
+      summary: Liveness check
+      security: []
+      responses:
+        '200':
+          description: The API is running.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+
+  /session:
+    get:
+      tags: [Session]
+      summary: Current user and selectable local users
+      security: []
+      responses:
+        '200': { $ref: '#/components/responses/Session' }
+    put:
+      tags: [Session]
+      summary: Select a local user
+      description: Sets the `claimflow_session` cookie.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [userId]
+              properties:
+                userId: { $ref: '#/components/schemas/Id' }
+      responses:
+        '200':
+          description: Signed in.
+          headers:
+            Set-Cookie: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+    delete:
+      tags: [Session]
+      summary: Sign out
+      security: []
+      responses:
+        '200': { $ref: '#/components/responses/Session' }
+
+  /categories:
+    get:
+      tags: [Categories]
+      summary: List all categories
+      responses:
+        '200':
+          description: Categories sorted by name.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Category' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+    post:
+      tags: [Categories]
+      summary: Create a category (administrator)
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateCategoryRequest' }
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Category' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /categories/{categoryId}:
+    parameters:
+      - name: categoryId
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/Id' }
+    patch:
+      tags: [Categories]
+      summary: Update a category (administrator)
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateCategoryRequest' }
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Category' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [Categories]
+      summary: Delete an unused category (administrator)
+      description: >
+        Refused with `CATEGORY_IN_USE` while any claim uses the category;
+        deactivate it instead.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/Action' }
+      responses:
+        '204': { description: Deleted. }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /me/claims:
+    get:
+      tags: [Claims]
+      summary: The signed-in employee's claims
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '200': { $ref: '#/components/responses/ClaimPage' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /review-queue:
+    get:
+      tags: [Claims]
+      summary: Open claims assigned to the signed-in manager
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '200': { $ref: '#/components/responses/ClaimPage' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /claims:
+    get:
+      tags: [Claims]
+      summary: All claims, optionally by status (administrator)
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ClaimStatus' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '200': { $ref: '#/components/responses/ClaimPage' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Claims]
+      summary: Create a draft claim (employee)
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateClaimRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/ClaimCreated' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /claims/{claimId}:
+    parameters: [{ $ref: '#/components/parameters/ClaimId' }]
+    get:
+      tags: [Claims]
+      summary: Get a claim
+      responses:
+        '200': { $ref: '#/components/responses/Claim' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Claims]
+      summary: Edit a draft (owner)
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateClaimRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/Claim' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [Claims]
+      summary: Delete a never-submitted draft (owner)
+      description: >
+        Removes the draft, its history, and its receipt file. Claims that have
+        ever been submitted are kept (`CLAIM_NOT_DELETABLE`), even after being
+        reopened.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/Action' }
+      responses:
+        '204': { description: Deleted. }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /claims/{claimId}/history:
+    parameters: [{ $ref: '#/components/parameters/ClaimId' }]
+    get:
+      tags: [Claims]
+      summary: Claim history, oldest first
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '200':
+          description: A page of history entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/HistoryEntry' }
+                  nextCursor: { type: string }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /claims/{claimId}/submit:
+    parameters: [{ $ref: '#/components/parameters/ClaimId' }]
+    post:
+      tags: [Lifecycle]
+      summary: Submit or resubmit a draft (owner)
+      description: Re-evaluates the current category policy and assigns the owner's manager.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/Action' }
+      responses: *actionResponses
+
+  /claims/{claimId}/start-review:
+    parameters: [{ $ref: '#/components/parameters/ClaimId' }]
+    post:
+      tags: [Lifecycle]
+      summary: Start reviewing a submitted claim (assigned manager)
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/Action' }
+      responses: *actionResponses
+
+  /claims/{claimId}/approve:
+    parameters: [{ $ref: '#/components/parameters/ClaimId' }]
+    post:
+      tags: [Lifecycle]
+      summary: Approve with a comment (assigned manager)
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/Decision' }
+      responses: *actionResponses
+
+  /claims/{claimId}/reject:
+    parameters: [{ $ref: '#/components/parameters/ClaimId' }]
+    post:
+      tags: [Lifecycle]
+      summary: Reject with a comment (assigned manager)
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/Decision' }
+      responses: *actionResponses
+
+  /claims/{claimId}/reopen:
+    parameters: [{ $ref: '#/components/parameters/ClaimId' }]
+    post:
+      tags: [Lifecycle]
+      summary: Return a rejected claim to draft (owner)
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/Action' }
+      responses: *actionResponses
+
+  /claims/{claimId}/mark-paid:
+    parameters: [{ $ref: '#/components/parameters/ClaimId' }]
+    post:
+      tags: [Lifecycle]
+      summary: Mark an approved claim as paid (administrator)
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/Action' }
+      responses: *actionResponses
+
+  /receipts:
+    post:
+      tags: [Receipts]
+      summary: Upload a receipt file (employee)
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - name: X-File-Name
+          in: header
+          description: URI-encoded original file name; sanitized by the server.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/pdf:
+            schema: { type: string, format: binary }
+          image/jpeg:
+            schema: { type: string, format: binary }
+          image/png:
+            schema: { type: string, format: binary }
+      responses:
+        '201':
+          description: Stored and measured by the server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadedReceipt' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+
+  /claims/{claimId}/receipt:
+    parameters: [{ $ref: '#/components/parameters/ClaimId' }]
+    get:
+      tags: [Receipts]
+      summary: Download the claim's receipt
+      responses:
+        '200':
+          description: The receipt file, served inline.
+          headers:
+            Content-Disposition: { schema: { type: string } }
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+            image/jpeg:
+              schema: { type: string, format: binary }
+            image/png:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Receipts]
+      summary: Attach or replace the draft's receipt (owner)
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttachReceiptRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/Claim' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [Receipts]
+      summary: Remove the draft's receipt (owner)
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { $ref: '#/components/requestBodies/Action' }
+      responses:
+        '200': { $ref: '#/components/responses/Claim' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: claimflow_session
+
+  parameters:
+    ClaimId:
+      name: claimId
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Id' }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Retries with the same key and request replay the original response.
+      schema: { type: string, pattern: '^[A-Za-z0-9_.:-]{8,128}$' }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque `nextCursor` from the previous page of the same list.
+      schema: { type: string, maxLength: 512 }
+
+  requestBodies:
+    Action:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [expectedVersion]
+            properties:
+              expectedVersion: { $ref: '#/components/schemas/Version' }
+    Decision:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [expectedVersion, comment]
+            properties:
+              expectedVersion: { $ref: '#/components/schemas/Version' }
+              comment:
+                type: string
+                maxLength: 4000
+                description: Required and nonblank; at most 1000 characters after trimming.
+
+  responses:
+    Session:
+      description: The current development session.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Session' }
+    Claim:
+      description: The claim.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Claim' }
+    ClaimCreated:
+      description: The new draft.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Claim' }
+    ClaimPage:
+      description: A page of claims.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [items]
+            properties:
+              items:
+                type: array
+                items: { $ref: '#/components/schemas/Claim' }
+              nextCursor: { type: string }
+    ValidationFailed:
+      description: Invalid input or a business-rule violation (`VALIDATION_FAILED`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthenticated:
+      description: No local user is selected (`UNAUTHENTICATED`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Not permitted (`FORBIDDEN` or `SELF_REVIEW_FORBIDDEN`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Missing or not visible to this user (`NOT_FOUND`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: >
+        `VERSION_CONFLICT`, `INVALID_TRANSITION`, `CLAIM_NOT_EDITABLE`,
+        `CLAIM_NOT_DELETABLE`, `CATEGORY_IN_USE`, or `IDEMPOTENCY_CONFLICT`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    PayloadTooLarge:
+      description: Receipt over 10 MB or JSON body over 64 KB (`PAYLOAD_TOO_LARGE`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Id:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{1,64}$'
+    Version:
+      type: integer
+      minimum: 1
+    Role:
+      type: string
+      enum: [EMPLOYEE, MANAGER, ADMIN]
+    ClaimStatus:
+      type: string
+      enum: [DRAFT, SUBMITTED, UNDER_REVIEW, APPROVED, REJECTED, PAID]
+    ClaimAction:
+      type: string
+      enum: [SUBMIT, START_REVIEW, APPROVE, REJECT, REOPEN, MARK_PAID]
+    HistoryAction:
+      type: string
+      enum:
+        - CREATE
+        - UPDATE
+        - ATTACH_RECEIPT
+        - REPLACE_RECEIPT
+        - REMOVE_RECEIPT
+        - SUBMIT
+        - START_REVIEW
+        - APPROVE
+        - REJECT
+        - REOPEN
+        - MARK_PAID
+    ReceiptContentType:
+      type: string
+      enum: [application/pdf, image/jpeg, image/png]
+    Money:
+      type: object
+      additionalProperties: false
+      required: [amountMinor, currency]
+      properties:
+        amountMinor:
+          type: integer
+          description: Integer minor units, e.g. 12550 MYR is RM 125.50. Must be positive to submit.
+        currency:
+          type: string
+          maxLength: 3
+          description: Three-letter uppercase code matching the category currency.
+    PersonRef:
+      type: object
+      required: [userId, displayName]
+      properties:
+        userId: { type: string }
+        displayName: { type: string }
+    UserSummary:
+      type: object
+      required: [userId, displayName, title, roles]
+      properties:
+        userId: { type: string }
+        displayName: { type: string }
+        title: { type: string }
+        roles:
+          type: array
+          items: { $ref: '#/components/schemas/Role' }
+    Session:
+      type: object
+      required: [user, users]
+      properties:
+        user:
+          oneOf:
+            - type: 'null'
+            - allOf:
+                - { $ref: '#/components/schemas/UserSummary' }
+                - type: object
+                  properties:
+                    manager: { $ref: '#/components/schemas/PersonRef' }
+        users:
+          type: array
+          items: { $ref: '#/components/schemas/UserSummary' }
+    Category:
+      type: object
+      required:
+        - categoryId
+        - name
+        - active
+        - currency
+        - maxAmountMinor
+        - receiptRequiredAboveMinor
+        - version
+        - updatedAt
+      properties:
+        categoryId: { type: string }
+        name: { type: string }
+        active: { type: boolean }
+        currency: { type: string }
+        maxAmountMinor:
+          type: integer
+          description: Inclusive limit in minor units.
+        receiptRequiredAboveMinor:
+          type: integer
+          description: A receipt is required when the amount is strictly above this.
+        version: { $ref: '#/components/schemas/Version' }
+        updatedAt: { type: string, format: date-time }
+    CreateCategoryRequest:
+      type: object
+      additionalProperties: false
+      required: [name, currency, maxAmountMinor, receiptRequiredAboveMinor]
+      properties:
+        name:
+          {
+            type: string,
+            maxLength: 200,
+            description: 1–80 characters after trimming.,
+          }
+        currency: { type: string, maxLength: 3 }
+        maxAmountMinor: { type: integer, minimum: 1 }
+        receiptRequiredAboveMinor: { type: integer, minimum: 0 }
+        active: { type: boolean, default: true }
+    UpdateCategoryRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion]
+      properties:
+        expectedVersion: { $ref: '#/components/schemas/Version' }
+        name: { type: string, maxLength: 200 }
+        currency: { type: string, maxLength: 3 }
+        maxAmountMinor: { type: integer, minimum: 1 }
+        receiptRequiredAboveMinor: { type: integer, minimum: 0 }
+        active: { type: boolean }
+    CreateClaimRequest:
+      type: object
+      additionalProperties: false
+      description: Every field is optional for a draft.
+      properties:
+        categoryId: { $ref: '#/components/schemas/Id' }
+        amount: { $ref: '#/components/schemas/Money' }
+        expenseDate: { type: string, format: date, maxLength: 32 }
+        merchant:
+          {
+            type: string,
+            maxLength: 1000,
+            description: At most 120 characters after trimming.,
+          }
+        businessPurpose:
+          {
+            type: string,
+            maxLength: 4000,
+            description: At most 500 characters after trimming.,
+          }
+    UpdateClaimRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion]
+      description: '`null` clears a field; absent fields are unchanged.'
+      properties:
+        expectedVersion: { $ref: '#/components/schemas/Version' }
+        categoryId:
+          oneOf: [{ $ref: '#/components/schemas/Id' }, { type: 'null' }]
+        amount:
+          oneOf: [{ $ref: '#/components/schemas/Money' }, { type: 'null' }]
+        expenseDate: { type: [string, 'null'], maxLength: 32 }
+        merchant: { type: [string, 'null'], maxLength: 1000 }
+        businessPurpose: { type: [string, 'null'], maxLength: 4000 }
+    AttachReceiptRequest:
+      type: object
+      additionalProperties: false
+      required:
+        [expectedVersion, receiptId, contentType, sizeBytes, checksumSha256]
+      properties:
+        expectedVersion: { $ref: '#/components/schemas/Version' }
+        receiptId: { $ref: '#/components/schemas/Id' }
+        contentType: { type: string, maxLength: 100 }
+        sizeBytes: { type: integer, minimum: 0 }
+        checksumSha256:
+          type: string
+          maxLength: 128
+          description: Lower-case hex SHA-256 of the uploaded file.
+    Receipt:
+      type: object
+      required:
+        [
+          receiptId,
+          fileName,
+          contentType,
+          sizeBytes,
+          checksumSha256,
+          attachedAt,
+        ]
+      properties:
+        receiptId: { type: string }
+        fileName: { type: string }
+        contentType: { $ref: '#/components/schemas/ReceiptContentType' }
+        sizeBytes: { type: integer }
+        checksumSha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        attachedAt: { type: string, format: date-time }
+    UploadedReceipt:
+      type: object
+      required:
+        [
+          receiptId,
+          fileName,
+          contentType,
+          sizeBytes,
+          checksumSha256,
+          uploadedAt,
+        ]
+      properties:
+        receiptId: { type: string }
+        fileName: { type: string }
+        contentType: { $ref: '#/components/schemas/ReceiptContentType' }
+        sizeBytes: { type: integer, minimum: 1, maximum: 10485760 }
+        checksumSha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        uploadedAt: { type: string, format: date-time }
+    Claim:
+      type: object
+      required:
+        [claimId, employee, status, version, createdAt, updatedAt, permissions]
+      properties:
+        claimId: { type: string }
+        employee: { $ref: '#/components/schemas/PersonRef' }
+        assignedManager: { $ref: '#/components/schemas/PersonRef' }
+        categoryId: { type: string }
+        categoryName: { type: string }
+        amount: { $ref: '#/components/schemas/Money' }
+        expenseDate: { type: string, format: date }
+        merchant: { type: string }
+        businessPurpose: { type: string }
+        receipt: { $ref: '#/components/schemas/Receipt' }
+        status: { $ref: '#/components/schemas/ClaimStatus' }
+        version: { $ref: '#/components/schemas/Version' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        submittedAt: { type: string, format: date-time }
+        reviewedAt: { type: string, format: date-time }
+        permissions:
+          type: object
+          description: What the signed-in user may do, computed by the server.
+          required: [canEdit, canDelete, actions]
+          properties:
+            canEdit: { type: boolean }
+            canDelete: { type: boolean }
+            actions:
+              type: array
+              items: { $ref: '#/components/schemas/ClaimAction' }
+    HistoryEntry:
+      type: object
+      required: [version, action, toStatus, actor, occurredAt]
+      properties:
+        version: { $ref: '#/components/schemas/Version' }
+        action: { $ref: '#/components/schemas/HistoryAction' }
+        fromStatus: { $ref: '#/components/schemas/ClaimStatus' }
+        toStatus: { $ref: '#/components/schemas/ClaimStatus' }
+        actor: { $ref: '#/components/schemas/PersonRef' }
+        occurredAt: { type: string, format: date-time }
+        comment: { type: string }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_FAILED
+                - UNAUTHENTICATED
+                - FORBIDDEN
+                - SELF_REVIEW_FORBIDDEN
+                - NOT_FOUND
+                - VERSION_CONFLICT
+                - INVALID_TRANSITION
+                - CLAIM_NOT_EDITABLE
+                - CLAIM_NOT_DELETABLE
+                - CATEGORY_IN_USE
+                - IDEMPOTENCY_CONFLICT
+                - PAYLOAD_TOO_LARGE
+                - INTERNAL_ERROR
+            message: { type: string, description: Safe to show to users. }
+            requestId: { type: string }
+            details:
+              type: array
+              items:
+                type: object
+                required: [field, code, message]
+                properties:
+                  field: { type: string }
+                  code: { type: string }
+                  message: { type: string }

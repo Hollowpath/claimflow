@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
+
+# Local application data: JSON database, receipts, session secret.
+.local/
+
+# Local working notes, not part of the project.
+start/
