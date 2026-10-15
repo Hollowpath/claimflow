@@ -103,7 +103,14 @@ npm run build
 
 ## Deployment considerations
 
-ClaimFlow does not currently include deployment configuration. Running it beyond the local development runtime would require, at minimum, replacing development sign-in with a real identity provider and replacing the local adapters with durable storage that supports concurrent API instances. The application services already depend only on the port interfaces listed above, so new adapters can be added without changing the domain rules or the API contract.
+ClaimFlow's AWS infrastructure is being built incrementally, following [the AWS architecture](docs/aws-architecture.md):
+
+- **Infrastructure:** a TypeScript AWS CDK application in `infrastructure/` defines the `ClaimFlow` DynamoDB table, which is deployed in `ap-southeast-1`.
+- **Application runtime:** the application still runs only locally, using development sign-in and the local adapters described above.
+- **Future increments:** Cognito authentication, the AWS API runtime, the AWS adapters, receipt storage, and the other approved components.
+- **Deployments:** AWS deployments are run manually and never automatically.
+
+Running the application on AWS requires replacing development sign-in with Cognito and the local adapters with AWS adapters backed by durable storage that supports concurrent API instances. The application services already depend only on the port interfaces listed above, so new adapters can be added without changing the domain rules or the API contract.
 
 ## Documentation
 
