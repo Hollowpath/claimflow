@@ -1,6 +1,6 @@
 # AWS architecture
 
-This document defines the approved target architecture for running ClaimFlow on AWS. It is a design document only: no AWS resources, infrastructure code, or AWS adapters exist in the repository yet.
+This document defines the approved target architecture for running ClaimFlow on AWS. The architecture is being implemented in increments. The TypeScript CDK application exists in `infrastructure/`, and the `ClaimFlow` DynamoDB table is defined and deployed in `ap-southeast-1`. All other components, including the application's AWS adapters, are future increments (see section 4).
 
 The document distinguishes three things throughout:
 
@@ -87,10 +87,11 @@ The complete rules are in [domain-model.md](domain-model.md). The parts that sha
 
 ### Deployment boundary
 
-- Future infrastructure is intended to be defined with AWS CDK in TypeScript.
-- No CDK application or AWS infrastructure exists in the repository yet.
-- Creating infrastructure and deploying are outside Phase 0, which covers design only.
-- Deployment must never run automatically, including from CI, without explicit authorization.
+- Infrastructure is defined with AWS CDK in TypeScript in the `infrastructure/` workspace, as one stack (`ClaimFlowStack`, stack ID `ClaimFlow`).
+- Implemented so far: the `ClaimFlow` DynamoDB table (section 5), defined in the stack and deployed in `ap-southeast-1`.
+- All other approved components remain future increments: the API and its Lambda function, the Cognito User Pool, the receipt bucket, the event bus, the publisher, sweeper, janitor, and cleanup functions, and their queues.
+- Phase 0 produced this design only; infrastructure is added in separate, reviewed increments.
+- Deployment is manual. It must never run automatically, including from CI, without explicit authorization.
 
 ### Web application hosting
 
@@ -1000,7 +1001,7 @@ These are recorded for later and are **not** part of the approved design.
 - **Strict per-claim event ordering:** a dedicated design for a future consumer that requires it, for example buffering by `previousEventVersion` or reading the authoritative claim state when an event arrives.
 - **Customer-managed KMS keys:** if a compliance requirement calls for them; the approved design uses AWS-managed encryption.
 - **Web application hosting on AWS:** unresolved; see section 4 and the open decisions in section 25.
-- **Infrastructure and deployment:** AWS CDK in TypeScript is the intended tool, but no infrastructure is defined or deployed in Phase 0 (section 4).
+- **Remaining infrastructure:** every approved component beyond the DynamoDB table is a future increment, defined in the CDK application and deployed manually (section 4).
 
 ## 25. Decisions
 
@@ -1039,7 +1040,7 @@ All decisions below are approved.
 | API compute           | One API Lambda function behind an HTTP API                                                                                                          |
 | Identity              | Cognito User Pool with API Gateway JWT authorization; administrator-created users; roles and manager in DynamoDB profiles; no Cognito Identity Pool |
 | Receipt upload        | Presigned S3 POST policy with exact `content-length-range` and SHA-256 checksum conditions                                                          |
-| Infrastructure        | AWS CDK in TypeScript, intended for a later phase; none exists yet                                                                                  |
+| Infrastructure        | AWS CDK in TypeScript (`infrastructure/`); the `ClaimFlow` DynamoDB table is deployed, and other components are future increments                   |
 | Data model            | Single DynamoDB table with GSI1–GSI4; GSI4 also holds pending outbox items                                                                          |
 | Stream                | `NEW_AND_OLD_IMAGES`                                                                                                                                |
 | Write model           | One transaction per mutation, including history, outbox events, and the idempotency result                                                          |

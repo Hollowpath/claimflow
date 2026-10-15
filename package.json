@@ -11,7 +11,8 @@
     "packages/domain",
     "packages/contracts",
     "services/api",
-    "apps/web"
+    "apps/web",
+    "infrastructure"
   ],
   "scripts": {
     "dev": "concurrently --names api,web --prefix-colors cyan,magenta --kill-others-on-fail \"npm run dev -w @claimflow/api\" \"npm run dev -w @claimflow/web\"",

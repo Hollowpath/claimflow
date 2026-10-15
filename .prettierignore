@@ -4,3 +4,7 @@ node_modules/
 package-lock.json
 
 .local/
+
+# Generated CDK output
+**/cdk.out/
+**/.cdk.staging/
