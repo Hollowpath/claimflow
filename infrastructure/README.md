@@ -9,7 +9,12 @@ The application defines a single stack, `ClaimFlow` (class `ClaimFlowStack` in `
 
 ## Resources
 
-The stack currently contains one resource: the ClaimFlow DynamoDB table.
+The stack defines two resources:
+
+| Resource                      | Status                                   |
+| ----------------------------- | ---------------------------------------- |
+| DynamoDB table `ClaimFlow`    | Defined and deployed in `ap-southeast-1` |
+| Cognito User Pool `ClaimFlow` | Defined and deployed in `ap-southeast-1` |
 
 ### DynamoDB table `ClaimFlow`
 
@@ -35,7 +40,32 @@ Global secondary indexes, all with string keys and `ALL` projection:
 | `GSI3` | `GSI3PK`      | `GSI3SK` |
 | `GSI4` | `GSI4PK`      | `GSI4SK` |
 
-The meaning of each key and index is defined in section 5 of the architecture document. The stack grants no IAM permissions and contains no Lambda functions, S3 buckets, or other resources yet.
+The meaning of each key and index is defined in section 5 of the architecture document.
+
+### Cognito User Pool `ClaimFlow`
+
+Defined with the `UserPool` construct. The application is **not connected to Cognito**: it still uses development sign-in locally.
+
+| Setting             | Value                                                                                                  |
+| ------------------- | ------------------------------------------------------------------------------------------------------ |
+| Feature plan        | Lite, set explicitly instead of relying on Cognito's default plan; no Essentials or Plus features      |
+| User creation       | Administrators only; self-service sign-up is disabled                                                  |
+| Sign-in             | Email address, case-insensitive                                                                        |
+| Attributes          | `email` (standard, required); no custom attributes                                                     |
+| Email verification  | Automatic (`email` is an auto-verified attribute)                                                      |
+| Account recovery    | Verified email only                                                                                    |
+| Password policy     | At least 12 characters with uppercase, lowercase, digits, and symbols; temporary passwords last 7 days |
+| MFA                 | Optional, software-token (TOTP) only; SMS MFA disabled                                                 |
+| Deletion protection | Enabled                                                                                                |
+| Removal policy      | `RETAIN`: the user pool is kept if it is removed from the stack or must be replaced                    |
+
+The email address is both the sign-in identifier and the only account-recovery destination, so every user must have a verified email address. When an administrator creates a user with `AdminCreateUser`, set the `email` attribute together with `email_verified=true`; otherwise the user cannot recover their account by email.
+
+Authorization data is not stored in Cognito: there are no role groups and no role or manager attributes. Roles and manager assignments live in DynamoDB user-profile items keyed by the user's Cognito `sub` (section 17 of the architecture document).
+
+The user pool has no app client, domain, managed login, callback URLs, users, Lambda triggers, or SES configuration yet. The app client and callback URLs depend on the web hosting decision, which is still open.
+
+The stack grants no IAM permissions and contains no Lambda functions, API Gateway resources, S3 buckets, or other resources yet.
 
 ## Useful commands
 
@@ -47,4 +77,4 @@ The meaning of each key and index is defined in section 5 of the architecture do
 
 Bootstrapping and deploying (`npx cdk bootstrap`, `npx cdk deploy`) change an AWS account. Run them only deliberately, never automatically.
 
-Because the table has deletion protection and a `RETAIN` removal policy, deleting the stack does not delete the table or its data. Removing it requires disabling deletion protection and deleting the table explicitly.
+Because the table and the user pool both have deletion protection and a `RETAIN` removal policy, deleting the stack does not delete them or their data. Removing either requires disabling its deletion protection and deleting it explicitly.

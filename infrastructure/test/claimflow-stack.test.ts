@@ -9,6 +9,7 @@ import {
 } from '../lib/claimflow-stack';
 
 const TABLE_TYPE = 'AWS::DynamoDB::GlobalTable';
+const USER_POOL_TYPE = 'AWS::Cognito::UserPool';
 
 interface TableResource {
   readonly Properties: Record<string, any>;
@@ -16,10 +17,13 @@ interface TableResource {
   readonly UpdateReplacePolicy?: string;
 }
 
+type UserPoolResource = TableResource;
+
 describe('ClaimFlowStack', () => {
   let stack: ClaimFlowStack;
   let template: Template;
   let table: TableResource;
+  let userPool: UserPoolResource;
 
   beforeAll(() => {
     stack = new ClaimFlowStack(new App(), 'ClaimFlow', {
@@ -29,6 +33,9 @@ describe('ClaimFlowStack', () => {
     const tables = Object.values(template.findResources(TABLE_TYPE));
     expect(tables).toHaveLength(1);
     table = tables[0] as TableResource;
+    const userPools = Object.values(template.findResources(USER_POOL_TYPE));
+    expect(userPools).toHaveLength(1);
+    userPool = userPools[0] as UserPoolResource;
   });
 
   describe('stack', () => {
@@ -40,15 +47,31 @@ describe('ClaimFlowStack', () => {
       expect(stack.region).toBe('ap-southeast-1');
     });
 
-    it('contains only the DynamoDB table', () => {
+    it('contains only the DynamoDB table and the Cognito User Pool', () => {
       const resourceTypes = Object.values(
         (template.toJSON().Resources ?? {}) as Record<string, { Type: string }>,
       )
         .map((resource) => resource.Type)
         .filter((type) => type !== 'AWS::CDK::Metadata');
 
-      expect(resourceTypes).toEqual([TABLE_TYPE]);
+      expect(resourceTypes.sort()).toEqual([USER_POOL_TYPE, TABLE_TYPE].sort());
       template.resourceCountIs('AWS::KMS::Key', 0);
+    });
+
+    it.each([
+      'AWS::Cognito::IdentityPool',
+      'AWS::Cognito::UserPoolClient',
+      'AWS::Cognito::UserPoolDomain',
+      'AWS::Cognito::UserPoolUser',
+      'AWS::Cognito::UserPoolGroup',
+      'AWS::Cognito::ManagedLoginBranding',
+      'AWS::Lambda::Function',
+      'AWS::IAM::Role',
+      'AWS::ApiGatewayV2::Api',
+      'AWS::ApiGateway::RestApi',
+      'AWS::SES::EmailIdentity',
+    ])('defines no %s', (type) => {
+      template.resourceCountIs(type, 0);
     });
 
     it('uses the default synthesizer bootstrap version check', () => {
@@ -144,6 +167,81 @@ describe('ClaimFlowStack', () => {
       expect(table.Properties.AttributeDefinitions).toEqual(
         names.map((AttributeName) => ({ AttributeName, AttributeType: 'S' })),
       );
+    });
+  });
+
+  describe('Cognito User Pool', () => {
+    it('is named ClaimFlow and exposed by the stack', () => {
+      expect(userPool.Properties.UserPoolName).toBe('ClaimFlow');
+      expect(stack.userPool).toBeDefined();
+    });
+
+    it('uses the Lite feature plan', () => {
+      expect(userPool.Properties.UserPoolTier).toBe('LITE');
+    });
+
+    it('verifies email addresses automatically', () => {
+      expect(userPool.Properties.AutoVerifiedAttributes).toEqual(['email']);
+    });
+
+    it('allows only administrators to create users', () => {
+      expect(userPool.Properties.AdminCreateUserConfig).toEqual({
+        AllowAdminCreateUserOnly: true,
+      });
+    });
+
+    it('signs users in with their email address, case-insensitively', () => {
+      expect(userPool.Properties.UsernameAttributes).toEqual(['email']);
+      expect(userPool.Properties).not.toHaveProperty('AliasAttributes');
+      expect(userPool.Properties.UsernameConfiguration).toEqual({
+        CaseSensitive: false,
+      });
+    });
+
+    it('requires email as the only schema attribute, with no custom attributes', () => {
+      expect(userPool.Properties.Schema).toEqual([
+        { Name: 'email', Required: true, Mutable: true },
+      ]);
+    });
+
+    it('recovers accounts by email only', () => {
+      expect(userPool.Properties.AccountRecoverySetting).toEqual({
+        RecoveryMechanisms: [{ Name: 'verified_email', Priority: 1 }],
+      });
+    });
+
+    it('enforces the complete password policy', () => {
+      expect(userPool.Properties.Policies).toEqual({
+        PasswordPolicy: {
+          MinimumLength: 12,
+          RequireUppercase: true,
+          RequireLowercase: true,
+          RequireNumbers: true,
+          RequireSymbols: true,
+          TemporaryPasswordValidityDays: 7,
+        },
+      });
+    });
+
+    it('offers optional TOTP MFA with SMS MFA disabled', () => {
+      expect(userPool.Properties.MfaConfiguration).toBe('OPTIONAL');
+      expect(userPool.Properties.EnabledMfas).toEqual(['SOFTWARE_TOKEN_MFA']);
+      expect(userPool.Properties).not.toHaveProperty('SmsConfiguration');
+    });
+
+    it('has deletion protection enabled', () => {
+      expect(userPool.Properties.DeletionProtection).toBe('ACTIVE');
+    });
+
+    it('is retained when removed from the stack or replaced', () => {
+      expect(userPool.DeletionPolicy).toBe('Retain');
+      expect(userPool.UpdateReplacePolicy).toBe('Retain');
+    });
+
+    it('has no Lambda triggers, SES email configuration, or custom KMS key', () => {
+      expect(userPool.Properties).not.toHaveProperty('LambdaConfig');
+      expect(userPool.Properties).not.toHaveProperty('EmailConfiguration');
+      expect(JSON.stringify(userPool.Properties)).not.toContain('KmsKey');
     });
   });
 });

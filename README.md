@@ -105,9 +105,9 @@ npm run build
 
 ClaimFlow's AWS infrastructure is being built incrementally, following [the AWS architecture](docs/aws-architecture.md):
 
-- **Infrastructure:** a TypeScript AWS CDK application in `infrastructure/` defines the `ClaimFlow` DynamoDB table, which is deployed in `ap-southeast-1`.
-- **Application runtime:** the application still runs only locally, using development sign-in and the local adapters described above.
-- **Future increments:** Cognito authentication, the AWS API runtime, the AWS adapters, receipt storage, and the other approved components.
+- **Infrastructure:** a TypeScript AWS CDK application in `infrastructure/` defines the `ClaimFlow` DynamoDB table and the `ClaimFlow` Cognito User Pool, both deployed in `ap-southeast-1`.
+- **Application runtime:** the application still runs only locally, using development sign-in and the local adapters described above. It is not connected to the User Pool.
+- **Future increments:** the Cognito app client and the application's Cognito integration, the AWS API runtime, the AWS adapters, receipt storage, and the other approved components.
 - **Deployments:** AWS deployments are run manually and never automatically.
 
 Running the application on AWS requires replacing development sign-in with Cognito and the local adapters with AWS adapters backed by durable storage that supports concurrent API instances. The application services already depend only on the port interfaces listed above, so new adapters can be added without changing the domain rules or the API contract.
