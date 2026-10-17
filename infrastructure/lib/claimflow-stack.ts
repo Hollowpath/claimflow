@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib/core';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import type { Construct } from 'constructs';
 
 /** The only AWS Region ClaimFlow is deployed to. */
@@ -14,6 +15,9 @@ export const CLAIMFLOW_USER_POOL_NAME = 'ClaimFlow';
 
 /** The four global secondary indexes in docs/aws-architecture.md, section 5. */
 export const CLAIMFLOW_INDEX_NAMES = ['GSI1', 'GSI2', 'GSI3', 'GSI4'] as const;
+
+/** Uploaded receipts not yet attached to a claim (docs/aws-architecture.md, section 11). */
+export const CLAIMFLOW_PENDING_UPLOAD_PREFIX = 'uploads/pending/';
 
 const stringKey = (name: string): dynamodb.Attribute => ({
   name,
@@ -30,6 +34,9 @@ export class ClaimFlowStack extends cdk.Stack {
    * stored here; they live in DynamoDB user profiles keyed by the user's `sub`.
    */
   public readonly userPool: cognito.UserPool;
+
+  /** Private storage for pending uploads and attached receipt files. */
+  public readonly receiptBucket: s3.Bucket;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, { description: CLAIMFLOW_STACK_DESCRIPTION, ...props });
@@ -77,6 +84,25 @@ export class ClaimFlowStack extends cdk.Stack {
       mfaSecondFactor: { otp: true, sms: false },
       deletionProtection: true,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // No bucket name: S3 names are global, so CloudFormation generates one.
+    // CORS is deferred until the web application's origin is decided.
+    this.receiptBucket = new s3.Bucket(this, 'ReceiptBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      // Receipts are immutable once attached, so versioning is not needed.
+      versioned: false,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      autoDeleteObjects: false,
+      lifecycleRules: [
+        {
+          id: 'ExpirePendingUploads',
+          prefix: CLAIMFLOW_PENDING_UPLOAD_PREFIX,
+          expiration: cdk.Duration.days(1),
+        },
+      ],
     });
   }
 }

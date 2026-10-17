@@ -1,6 +1,6 @@
 # AWS architecture
 
-This document defines the approved target architecture for running ClaimFlow on AWS. The architecture is being implemented in increments. The TypeScript CDK application exists in `infrastructure/`, and the `ClaimFlow` DynamoDB table is defined and deployed in `ap-southeast-1`. All other components, including the application's AWS adapters, are future increments (see section 4).
+This document defines the approved target architecture for running ClaimFlow on AWS. The architecture is being implemented in increments. The TypeScript CDK application exists in `infrastructure/`. The `ClaimFlow` DynamoDB table, the `ClaimFlow` Cognito User Pool, and the receipt bucket are defined and deployed in `ap-southeast-1`; the application is not connected to any of them yet. All other components, including the application's AWS adapters, are future increments (see section 4).
 
 The document distinguishes three things throughout:
 
@@ -88,8 +88,9 @@ The complete rules are in [domain-model.md](domain-model.md). The parts that sha
 ### Deployment boundary
 
 - Infrastructure is defined with AWS CDK in TypeScript in the `infrastructure/` workspace, as one stack (`ClaimFlowStack`, stack ID `ClaimFlow`).
-- Implemented so far: the `ClaimFlow` DynamoDB table (section 5), defined in the stack and deployed in `ap-southeast-1`.
-- All other approved components remain future increments: the API and its Lambda function, the Cognito User Pool, the receipt bucket, the event bus, the publisher, sweeper, janitor, and cleanup functions, and their queues.
+- Defined in the stack and deployed in `ap-southeast-1`: the `ClaimFlow` DynamoDB table (section 5), the `ClaimFlow` Cognito User Pool (section 17) without an app client, and the receipt bucket (section 11) without CORS rules until the web origin is decided.
+- The application is not connected to this infrastructure yet: it still runs locally with development sign-in and local adapters, so receipt uploads do not reach the bucket.
+- All other approved components remain future increments: the API and its Lambda function, the Cognito app client, the event bus, the publisher, sweeper, janitor, and cleanup functions, and their queues.
 - Phase 0 produced this design only; infrastructure is added in separate, reviewed increments.
 - Deployment is manual. It must never run automatically, including from CI, without explicit authorization.
 
@@ -1001,7 +1002,7 @@ These are recorded for later and are **not** part of the approved design.
 - **Strict per-claim event ordering:** a dedicated design for a future consumer that requires it, for example buffering by `previousEventVersion` or reading the authoritative claim state when an event arrives.
 - **Customer-managed KMS keys:** if a compliance requirement calls for them; the approved design uses AWS-managed encryption.
 - **Web application hosting on AWS:** unresolved; see section 4 and the open decisions in section 25.
-- **Remaining infrastructure:** every approved component beyond the DynamoDB table is a future increment, defined in the CDK application and deployed manually (section 4).
+- **Remaining infrastructure:** every approved component beyond the DynamoDB table, the Cognito User Pool, and the receipt bucket is a future increment, defined in the CDK application and deployed manually (section 4).
 
 ## 25. Decisions
 
@@ -1034,17 +1035,17 @@ All decisions below are approved.
 
 ### Settled architecture choices
 
-| Choice                | Outcome                                                                                                                                             |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| AWS Region            | `ap-southeast-1`                                                                                                                                    |
-| API compute           | One API Lambda function behind an HTTP API                                                                                                          |
-| Identity              | Cognito User Pool with API Gateway JWT authorization; administrator-created users; roles and manager in DynamoDB profiles; no Cognito Identity Pool |
-| Receipt upload        | Presigned S3 POST policy with exact `content-length-range` and SHA-256 checksum conditions                                                          |
-| Infrastructure        | AWS CDK in TypeScript (`infrastructure/`); the `ClaimFlow` DynamoDB table is deployed, and other components are future increments                   |
-| Data model            | Single DynamoDB table with GSI1–GSI4; GSI4 also holds pending outbox items                                                                          |
-| Stream                | `NEW_AND_OLD_IMAGES`                                                                                                                                |
-| Write model           | One transaction per mutation, including history, outbox events, and the idempotency result                                                          |
-| Event publication     | Stream publisher Lambda to EventBridge, with the scheduled sweeper for recovery                                                                     |
-| Event identifiers     | Existing `IdGenerator`; outbox sort key `OUTBOX#<occurredAt>#<eventId>`                                                                             |
-| Draft history cleanup | All history purged by the cleanup worker after the deletion transaction                                                                             |
-| Local runtime         | Kept as the default development runtime, with adapters matching the new port semantics                                                              |
+| Choice                | Outcome                                                                                                                                                               |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AWS Region            | `ap-southeast-1`                                                                                                                                                      |
+| API compute           | One API Lambda function behind an HTTP API                                                                                                                            |
+| Identity              | Cognito User Pool with API Gateway JWT authorization; administrator-created users; roles and manager in DynamoDB profiles; no Cognito Identity Pool                   |
+| Receipt upload        | Presigned S3 POST policy with exact `content-length-range` and SHA-256 checksum conditions                                                                            |
+| Infrastructure        | AWS CDK in TypeScript (`infrastructure/`); the DynamoDB table, the Cognito User Pool, and the receipt bucket are deployed, and other components are future increments |
+| Data model            | Single DynamoDB table with GSI1–GSI4; GSI4 also holds pending outbox items                                                                                            |
+| Stream                | `NEW_AND_OLD_IMAGES`                                                                                                                                                  |
+| Write model           | One transaction per mutation, including history, outbox events, and the idempotency result                                                                            |
+| Event publication     | Stream publisher Lambda to EventBridge, with the scheduled sweeper for recovery                                                                                       |
+| Event identifiers     | Existing `IdGenerator`; outbox sort key `OUTBOX#<occurredAt>#<eventId>`                                                                                               |
+| Draft history cleanup | All history purged by the cleanup worker after the deletion transaction                                                                                               |
+| Local runtime         | Kept as the default development runtime, with adapters matching the new port semantics                                                                                |

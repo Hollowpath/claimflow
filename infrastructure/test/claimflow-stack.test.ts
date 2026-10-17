@@ -10,6 +10,8 @@ import {
 
 const TABLE_TYPE = 'AWS::DynamoDB::GlobalTable';
 const USER_POOL_TYPE = 'AWS::Cognito::UserPool';
+const BUCKET_TYPE = 'AWS::S3::Bucket';
+const BUCKET_POLICY_TYPE = 'AWS::S3::BucketPolicy';
 
 interface TableResource {
   readonly Properties: Record<string, any>;
@@ -18,12 +20,15 @@ interface TableResource {
 }
 
 type UserPoolResource = TableResource;
+type BucketResource = TableResource;
 
 describe('ClaimFlowStack', () => {
   let stack: ClaimFlowStack;
   let template: Template;
   let table: TableResource;
   let userPool: UserPoolResource;
+  let bucket: BucketResource;
+  let bucketLogicalId: string;
 
   beforeAll(() => {
     stack = new ClaimFlowStack(new App(), 'ClaimFlow', {
@@ -36,6 +41,9 @@ describe('ClaimFlowStack', () => {
     const userPools = Object.values(template.findResources(USER_POOL_TYPE));
     expect(userPools).toHaveLength(1);
     userPool = userPools[0] as UserPoolResource;
+    const buckets = Object.entries(template.findResources(BUCKET_TYPE));
+    expect(buckets).toHaveLength(1);
+    [bucketLogicalId, bucket] = buckets[0] as [string, BucketResource];
   });
 
   describe('stack', () => {
@@ -47,14 +55,16 @@ describe('ClaimFlowStack', () => {
       expect(stack.region).toBe('ap-southeast-1');
     });
 
-    it('contains only the DynamoDB table and the Cognito User Pool', () => {
+    it('contains only the table, the user pool, and the receipt bucket with its policy', () => {
       const resourceTypes = Object.values(
         (template.toJSON().Resources ?? {}) as Record<string, { Type: string }>,
       )
         .map((resource) => resource.Type)
         .filter((type) => type !== 'AWS::CDK::Metadata');
 
-      expect(resourceTypes.sort()).toEqual([USER_POOL_TYPE, TABLE_TYPE].sort());
+      expect(resourceTypes.sort()).toEqual(
+        [USER_POOL_TYPE, TABLE_TYPE, BUCKET_TYPE, BUCKET_POLICY_TYPE].sort(),
+      );
       template.resourceCountIs('AWS::KMS::Key', 0);
     });
 
@@ -70,6 +80,12 @@ describe('ClaimFlowStack', () => {
       'AWS::ApiGatewayV2::Api',
       'AWS::ApiGateway::RestApi',
       'AWS::SES::EmailIdentity',
+      'AWS::CloudFront::Distribution',
+      'AWS::IAM::User',
+      'AWS::Events::EventBus',
+      'AWS::SQS::Queue',
+      'AWS::SNS::Topic',
+      'Custom::S3AutoDeleteObjects',
     ])('defines no %s', (type) => {
       template.resourceCountIs(type, 0);
     });
@@ -242,6 +258,76 @@ describe('ClaimFlowStack', () => {
       expect(userPool.Properties).not.toHaveProperty('LambdaConfig');
       expect(userPool.Properties).not.toHaveProperty('EmailConfiguration');
       expect(JSON.stringify(userPool.Properties)).not.toContain('KmsKey');
+    });
+  });
+
+  describe('receipt bucket', () => {
+    it('has a generated name and is exposed by the stack', () => {
+      expect(bucket.Properties).not.toHaveProperty('BucketName');
+      expect(stack.receiptBucket).toBeDefined();
+    });
+
+    it('blocks all public access', () => {
+      expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({
+        BlockPublicAcls: true,
+        BlockPublicPolicy: true,
+        IgnorePublicAcls: true,
+        RestrictPublicBuckets: true,
+      });
+    });
+
+    it('is encrypted with S3 managed keys and no KMS key', () => {
+      expect(bucket.Properties.BucketEncryption).toEqual({
+        ServerSideEncryptionConfiguration: [
+          { ServerSideEncryptionByDefault: { SSEAlgorithm: 'AES256' } },
+        ],
+      });
+      expect(JSON.stringify(bucket.Properties)).not.toContain('KMS');
+    });
+
+    it('does not enable versioning', () => {
+      expect(bucket.Properties).not.toHaveProperty('VersioningConfiguration');
+    });
+
+    it('expires pending uploads after one day and nothing else', () => {
+      expect(bucket.Properties.LifecycleConfiguration).toEqual({
+        Rules: [
+          {
+            Id: 'ExpirePendingUploads',
+            Prefix: 'uploads/pending/',
+            ExpirationInDays: 1,
+            Status: 'Enabled',
+          },
+        ],
+      });
+    });
+
+    it('is retained when removed from the stack or replaced', () => {
+      expect(bucket.DeletionPolicy).toBe('Retain');
+      expect(bucket.UpdateReplacePolicy).toBe('Retain');
+    });
+
+    it('has a bucket policy that denies requests not sent over TLS', () => {
+      template.resourceCountIs(BUCKET_POLICY_TYPE, 1);
+      template.hasResourceProperties(BUCKET_POLICY_TYPE, {
+        Bucket: { Ref: bucketLogicalId },
+        PolicyDocument: {
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Effect: 'Deny',
+              Principal: { AWS: '*' },
+              Action: 's3:*',
+              Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+            }),
+          ]),
+        },
+      });
+    });
+
+    it('has no CORS rules, website hosting, or auto-delete', () => {
+      expect(bucket.Properties).not.toHaveProperty('CorsConfiguration');
+      expect(bucket.Properties).not.toHaveProperty('WebsiteConfiguration');
+      expect(JSON.stringify(bucket)).not.toContain('auto-delete');
     });
   });
 });
