@@ -212,6 +212,17 @@ Against a fake client that applies the approved condition to an existing item:
 - uploads, attachments, replacements, removals, and draft deletions composed with claim and category operations without duplicate targets;
 - no file names in keys, conditions, or errors, and no DynamoDB or S3 command sent.
 
+## DynamoDB category writer (`services/api/test/dynamodb-category-writer.test.ts`)
+
+With a recording executor, and the real executor over a fake client:
+
+- the exact create, update-with-events, update-without-events (keeping `lastEventVersion`), and delete transactions, equal to the composer's output for the existing builders;
+- the category item, then outbox items in order, then the completed idempotency item, and the deterministic request token: stable across repeats and changed by the payload;
+- a missing idempotency record, a category guard, and missing options or events rejected before any command;
+- invalid categories, versions, category IDs, events, and idempotency data rejected before any command, with no supplied value in the messages;
+- invalid executors and table names rejected at construction;
+- exactly one `TransactWriteCommand` per valid write, and executor and SDK errors propagated unchanged without a retry.
+
 ## DynamoDB transaction executor (`services/api/test/dynamodb-transaction-executor.test.ts`)
 
 - the exact composed input sent once in a single `TransactWriteCommand`, with its token and operation order preserved and the input left unmodified;
