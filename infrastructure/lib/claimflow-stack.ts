@@ -67,6 +67,7 @@ export const CLAIMFLOW_OUTBOX_FAILURE_QUEUE_NAME =
 export const CLAIMFLOW_RECEIPT_JANITOR_NAME = 'claimflow-receipt-janitor';
 export const CLAIMFLOW_JANITOR_FAILURE_QUEUE_NAME =
   'claimflow-receipt-janitor-failures';
+export const CLAIMFLOW_OUTBOX_SWEEPER_NAME = 'claimflow-outbox-sweeper';
 export const CLAIMFLOW_PUBLISHER_EVENT_BUS_ENV = 'CLAIMFLOW_EVENT_BUS_NAME';
 
 const repositoryRoot = resolve(__dirname, '../..');
@@ -134,6 +135,15 @@ export class ClaimFlowStack extends cdk.Stack {
 
   /** Receives stream batches the receipt janitor could not process. */
   public readonly janitorFailureQueue: sqs.Queue;
+
+  /** Republishes outbox items still pending after the stream path. */
+  public readonly outboxSweeper: nodejs.NodejsFunction;
+
+  /** The outbox sweeper's own log group. */
+  public readonly outboxSweeperLogGroup: logs.LogGroup;
+
+  /** Invokes the outbox sweeper every 15 minutes. */
+  public readonly outboxSweeperSchedule: events.Rule;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, { description: CLAIMFLOW_STACK_DESCRIPTION, ...props });
@@ -588,6 +598,81 @@ export class ClaimFlowStack extends cdk.Stack {
           }),
         ],
       }),
+    );
+
+    // The outbox sweeper, built like the outbox publisher but invoked on a
+    // schedule. It has no failure queue: unpublished items stay pending, so
+    // later runs retry them.
+    this.outboxSweeperLogGroup = new logs.LogGroup(
+      this,
+      'OutboxSweeperLogGroup',
+      {
+        logGroupName: `/aws/lambda/${CLAIMFLOW_OUTBOX_SWEEPER_NAME}`,
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      },
+    );
+    const outboxSweeperRole = new iam.Role(this, 'OutboxSweeperRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+    });
+    this.outboxSweeperLogGroup.grantWrite(outboxSweeperRole);
+    outboxSweeperRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:Query'],
+        resources: [`${this.table.tableArn}/index/GSI4`],
+      }),
+    );
+    outboxSweeperRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
+        resources: [this.table.tableArn],
+      }),
+    );
+    outboxSweeperRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['events:PutEvents'],
+        resources: [this.eventBus.eventBusArn],
+      }),
+    );
+    this.outboxSweeper = new nodejs.NodejsFunction(this, 'OutboxSweeper', {
+      functionName: CLAIMFLOW_OUTBOX_SWEEPER_NAME,
+      entry: resolve(
+        repositoryRoot,
+        'services/api/src/adapters/aws/outbox-sweeper-lambda.ts',
+      ),
+      projectRoot: repositoryRoot,
+      depsLockFilePath: resolve(repositoryRoot, 'package-lock.json'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_24_X,
+      architecture: lambda.Architecture.ARM_64,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(60),
+      role: outboxSweeperRole,
+      logGroup: this.outboxSweeperLogGroup,
+      environment: {
+        [CLAIMFLOW_CLEANUP_WORKER_TABLE_ENV]: this.table.tableName,
+        [CLAIMFLOW_PUBLISHER_EVENT_BUS_ENV]: this.eventBus.eventBusName,
+      },
+      bundling: {
+        externalModules: [],
+        esbuildArgs: { '--conditions': 'source' },
+        forceDockerBundling: false,
+      },
+    });
+    this.outboxSweeperSchedule = new events.Rule(
+      this,
+      'OutboxSweeperSchedule',
+      {
+        ruleName: `${CLAIMFLOW_OUTBOX_SWEEPER_NAME}-schedule`,
+        description: 'Invokes the outbox sweeper every 15 minutes',
+        schedule: events.Schedule.rate(cdk.Duration.minutes(15)),
+        targets: [
+          new targets.LambdaFunction(this.outboxSweeper, {
+            retryAttempts: 2,
+            maxEventAge: cdk.Duration.hours(1),
+          }),
+        ],
+      },
     );
   }
 }

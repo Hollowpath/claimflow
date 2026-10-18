@@ -349,6 +349,14 @@ With stubbed environment variables and a fresh module import:
 - an empty batch, and records that are not removals made by the DynamoDB service, answered without calling AWS;
 - loading failing with a fixed message when the receipt bucket name is missing or empty.
 
+## Outbox sweeper Lambda entry point (`services/api/test/outbox-sweeper-lambda.test.ts`)
+
+With stubbed environment variables and a fresh module import:
+
+- the module exporting only `handler`;
+- the handler, with a spied document client, querying the `GSI4` index of the configured table and answering `{ selected: 0 }` for an empty page;
+- loading failing with a fixed message when the table name or the event bus name is missing or empty.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

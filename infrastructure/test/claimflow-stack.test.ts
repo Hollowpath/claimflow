@@ -11,6 +11,7 @@ import {
   CLAIMFLOW_OUTBOX_FAILURE_QUEUE_NAME,
   CLAIMFLOW_JANITOR_FAILURE_QUEUE_NAME,
   CLAIMFLOW_OUTBOX_PUBLISHER_NAME,
+  CLAIMFLOW_OUTBOX_SWEEPER_NAME,
   CLAIMFLOW_RECEIPT_JANITOR_NAME,
   CLAIMFLOW_EVENT_BUS_NAME,
   CLAIMFLOW_EVENT_SOURCE,
@@ -169,6 +170,12 @@ describe('ClaimFlowStack', () => {
           ROLE_TYPE,
           IAM_POLICY_TYPE,
           LOG_GROUP_TYPE,
+          RULE_TYPE,
+          FUNCTION_TYPE,
+          ROLE_TYPE,
+          IAM_POLICY_TYPE,
+          LOG_GROUP_TYPE,
+          'AWS::Lambda::Permission',
         ].sort(),
       );
       template.resourceCountIs('AWS::KMS::Key', 0);
@@ -187,7 +194,6 @@ describe('ClaimFlowStack', () => {
       'AWS::SES::EmailIdentity',
       'AWS::IAM::User',
       'AWS::SNS::Topic',
-      'AWS::Lambda::Permission',
       'AWS::Lambda::LayerVersion',
       'AWS::IAM::ManagedPolicy',
       'AWS::Events::Archive',
@@ -665,7 +671,11 @@ describe('ClaimFlowStack', () => {
       [busLogicalId] = resourceOf(stack.eventBus);
       [cleanupQueueLogicalId] = resourceOf(stack.cleanupQueue);
       [dlqLogicalId] = resourceOf(stack.cleanupDeadLetterQueue);
-      [ruleLogicalId] = Object.keys(template.findResources(RULE_TYPE));
+      [ruleLogicalId] = Object.keys(
+        template.findResources(RULE_TYPE, {
+          Properties: { Name: 'claimflow-cleanup' },
+        }),
+      );
     });
 
     it('defines a custom event bus named claimflow', () => {
@@ -736,7 +746,7 @@ describe('ClaimFlowStack', () => {
     });
 
     it('routes only the two cleanup detail types from claimflow.api', () => {
-      template.resourceCountIs(RULE_TYPE, 1);
+      template.resourceCountIs(RULE_TYPE, 2);
       template.hasResourceProperties(RULE_TYPE, {
         EventBusName: { Ref: busLogicalId },
         State: 'ENABLED',
@@ -842,12 +852,11 @@ describe('ClaimFlowStack', () => {
       template.toJSON().Resources[functionLogicalId].Properties;
 
     it('defines a role, policy, log group and mapping per function', () => {
-      template.resourceCountIs(FUNCTION_TYPE, 3);
-      template.resourceCountIs(ROLE_TYPE, 3);
-      template.resourceCountIs(IAM_POLICY_TYPE, 3);
-      template.resourceCountIs(LOG_GROUP_TYPE, 3);
+      template.resourceCountIs(FUNCTION_TYPE, 4);
+      template.resourceCountIs(ROLE_TYPE, 4);
+      template.resourceCountIs(IAM_POLICY_TYPE, 4);
+      template.resourceCountIs(LOG_GROUP_TYPE, 4);
       template.resourceCountIs(MAPPING_TYPE, 3);
-      template.resourceCountIs('AWS::Lambda::Permission', 0);
     });
 
     it('configures the function', () => {
@@ -1412,6 +1421,185 @@ describe('ClaimFlowStack', () => {
       expect(consumers).toHaveLength(2);
       expect(consumers).toContainEqual({ Ref: publisherLogicalId });
       expect(consumers).toContainEqual({ Ref: functionLogicalId });
+    });
+  });
+
+  describe('outbox sweeper', () => {
+    let functionLogicalId: string;
+    let roleLogicalId: string;
+    let logGroupLogicalId: string;
+    let scheduleLogicalId: string;
+    let tableId: string;
+    let busId: string;
+
+    const arnOf = (logicalId: string) => ({ 'Fn::GetAtt': [logicalId, 'Arn'] });
+    const resources = () =>
+      template.toJSON().Resources as Record<string, TableResource>;
+
+    const statements = (): Record<string, any>[] => {
+      const policies = Object.values(
+        template.findResources(IAM_POLICY_TYPE, {
+          Properties: { Roles: [{ Ref: roleLogicalId }] },
+        }),
+      ) as TableResource[];
+      expect(policies).toHaveLength(1);
+      return policies[0].Properties.PolicyDocument.Statement;
+    };
+
+    beforeAll(() => {
+      [functionLogicalId] = resourceOf(stack.outboxSweeper);
+      [logGroupLogicalId] = resourceOf(stack.outboxSweeperLogGroup);
+      [scheduleLogicalId] = resourceOf(stack.outboxSweeperSchedule);
+      [tableId] = Object.keys(template.findResources(TABLE_TYPE));
+      [busId] = resourceOf(stack.eventBus);
+      roleLogicalId =
+        resources()[functionLogicalId].Properties.Role['Fn::GetAtt'][0];
+    });
+
+    it('configures the function', () => {
+      expect(CLAIMFLOW_OUTBOX_SWEEPER_NAME).toBe('claimflow-outbox-sweeper');
+      template.hasResourceProperties(FUNCTION_TYPE, {
+        FunctionName: 'claimflow-outbox-sweeper',
+        Runtime: 'nodejs24.x',
+        Architectures: ['arm64'],
+        MemorySize: 256,
+        Timeout: 60,
+        Handler: 'index.handler',
+        Role: arnOf(roleLogicalId),
+        LoggingConfig: { LogGroup: { Ref: logGroupLogicalId } },
+      });
+      const properties = resources()[functionLogicalId].Properties;
+      expect(properties).not.toHaveProperty('TracingConfig');
+      expect(properties).not.toHaveProperty('ReservedConcurrentExecutions');
+      expect(properties).not.toHaveProperty('DeadLetterConfig');
+      expect(properties).not.toHaveProperty('Layers');
+      expect(properties.Code).toHaveProperty('S3Key');
+    });
+
+    it('passes only the table and event bus names', () => {
+      expect(resources()[functionLogicalId].Properties.Environment).toEqual({
+        Variables: {
+          CLAIMFLOW_TABLE_NAME: { Ref: tableId },
+          CLAIMFLOW_EVENT_BUS_NAME: { Ref: busId },
+        },
+      });
+    });
+
+    it('has a dedicated log group with 30 day retention', () => {
+      template.hasResourceProperties(LOG_GROUP_TYPE, {
+        LogGroupName: '/aws/lambda/claimflow-outbox-sweeper',
+        RetentionInDays: 30,
+      });
+    });
+
+    it('has its own role, assumed only by Lambda, with no managed policies', () => {
+      for (const other of [
+        stack.cleanupWorker,
+        stack.outboxPublisher,
+        stack.receiptJanitor,
+      ]) {
+        const otherRole =
+          resources()[resourceOf(other)[0]].Properties.Role['Fn::GetAtt'][0];
+        expect(roleLogicalId).not.toBe(otherRole);
+      }
+      const role = resources()[roleLogicalId].Properties;
+      expect(role.AssumeRolePolicyDocument.Statement).toEqual([
+        {
+          Action: 'sts:AssumeRole',
+          Effect: 'Allow',
+          Principal: { Service: 'lambda.amazonaws.com' },
+        },
+      ]);
+      expect(role).not.toHaveProperty('ManagedPolicyArns');
+    });
+
+    it('grants exactly the scoped permissions', () => {
+      expect(statements()).toEqual([
+        {
+          Effect: 'Allow',
+          Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+          Resource: arnOf(logGroupLogicalId),
+        },
+        {
+          Effect: 'Allow',
+          Action: 'dynamodb:Query',
+          Resource: { 'Fn::Join': ['', [arnOf(tableId), '/index/GSI4']] },
+        },
+        {
+          Effect: 'Allow',
+          Action: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
+          Resource: arnOf(tableId),
+        },
+        {
+          Effect: 'Allow',
+          Action: 'events:PutEvents',
+          Resource: arnOf(busId),
+        },
+      ]);
+    });
+
+    it('grants no stream, S3, SQS, wildcard or other index access', () => {
+      const json = JSON.stringify(statements());
+      expect(json).not.toMatch(/dynamodb:(Scan|PutItem|DeleteItem|Batch)/);
+      expect(json).not.toMatch(/dynamodb:\w*Stream/);
+      expect(json).not.toContain('StreamArn');
+      expect(json).not.toContain('s3:');
+      expect(json).not.toContain('sqs:');
+      expect(json).not.toContain('"*"');
+      expect(json).not.toMatch(/index\/GSI[123]/);
+      for (const statement of statements()) {
+        expect(statement).not.toHaveProperty('NotAction');
+        expect(statement).not.toHaveProperty('NotResource');
+        expect(statement.Action).not.toContain('*');
+      }
+    });
+
+    it('runs every 15 minutes on the default bus', () => {
+      template.hasResourceProperties(RULE_TYPE, {
+        Name: 'claimflow-outbox-sweeper-schedule',
+        ScheduleExpression: 'rate(15 minutes)',
+        State: 'ENABLED',
+      });
+      const rule = resources()[scheduleLogicalId].Properties;
+      expect(rule).not.toHaveProperty('EventBusName');
+      expect(rule).not.toHaveProperty('EventPattern');
+    });
+
+    it('targets only the sweeper with 2 retries and a 1 hour event age', () => {
+      expect(resources()[scheduleLogicalId].Properties.Targets).toEqual([
+        {
+          Arn: arnOf(functionLogicalId),
+          Id: 'Target0',
+          RetryPolicy: {
+            MaximumRetryAttempts: 2,
+            MaximumEventAgeInSeconds: 3600,
+          },
+        },
+      ]);
+    });
+
+    it('has no failure queue or dead-letter target', () => {
+      const target = resources()[scheduleLogicalId].Properties.Targets[0];
+      expect(target).not.toHaveProperty('DeadLetterConfig');
+      template.resourceCountIs(QUEUE_TYPE, 4);
+    });
+
+    it('lets only the schedule invoke the sweeper', () => {
+      template.resourceCountIs('AWS::Lambda::Permission', 1);
+      template.hasResourceProperties('AWS::Lambda::Permission', {
+        Action: 'lambda:InvokeFunction',
+        FunctionName: arnOf(functionLogicalId),
+        Principal: 'events.amazonaws.com',
+        SourceArn: arnOf(scheduleLogicalId),
+      });
+    });
+
+    it('has no event-source mapping', () => {
+      template.resourceCountIs(MAPPING_TYPE, 3);
+      const functions = Object.values(template.findResources(MAPPING_TYPE)).map(
+        (found) => (found as TableResource).Properties.FunctionName,
+      );
+      expect(functions).not.toContainEqual({ Ref: functionLogicalId });
     });
   });
 

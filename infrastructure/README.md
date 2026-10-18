@@ -22,6 +22,7 @@ The stack defines these resources:
 | Cleanup worker Lambda, its role, log group and queue mapping        | Defined and deployed in `ap-southeast-1` |
 | Outbox publisher Lambda, role, log group, failure queue and mapping | Defined and deployed in `ap-southeast-1` |
 | Receipt janitor Lambda, role, log group, failure queue and mapping  | Defined and deployed in `ap-southeast-1` |
+| Outbox sweeper Lambda, role, log group, schedule and permission     | Defined and deployed in `ap-southeast-1` |
 
 ### DynamoDB table `ClaimFlow`
 
@@ -183,7 +184,7 @@ The stack defines the cleanup worker (section 12 of the architecture document). 
 
 ### Outbox publisher
 
-The stack defines the outbox publisher (section 15 of the architecture document). It is defined and deployed in `ap-southeast-1`; the sweeper and the receipt janitor are not connected yet. The AWS application runtime does not exist yet, so nothing produces outbox events and the publisher stays idle.
+The stack defines the outbox publisher (section 15 of the architecture document). It is defined and deployed in `ap-southeast-1`; the sweeper is deployed as well (see below). The AWS application runtime is not implemented, so the publisher and sweeper currently have no application-created outbox events to process.
 
 - Function `claimflow-outbox-publisher` (`outboxPublisher` on the stack): Node.js 24, ARM64, 256 MB, 60-second timeout, tracing disabled, bundled like the cleanup worker. The entry point is `services/api/src/adapters/aws/outbox-publisher-lambda.ts`; its environment holds `CLAIMFLOW_TABLE_NAME` and `CLAIMFLOW_EVENT_BUS_NAME`.
 - Log group `/aws/lambda/claimflow-outbox-publisher` (`outboxPublisherLogGroup`) with 30-day retention.
@@ -201,6 +202,16 @@ The stack defines the receipt janitor (section 11 of the architecture document).
 - Failure queue `claimflow-receipt-janitor-failures` (`janitorFailureQueue`): standard, SQS-managed encryption, TLS enforced, 14-day retention.
 - A DynamoDB stream event-source mapping: starting at `LATEST`, batch size 10, partial batch failure reporting, batch bisection, 5 retry attempts, maximum record age 24 hours, the failure queue as the failure destination, and a filter for `REMOVE` records made by the `dynamodb.amazonaws.com` service whose old image is a `PENDING` `Receipt` (a TTL expiry).
 
+### Outbox sweeper
+
+The stack defines the outbox sweeper (section 15 of the architecture document). It is defined and deployed in `ap-southeast-1`, together with the Lambda invocation permission for the rule. The enabled schedule runs every 15 minutes and queries `GSI4` even while no outbox events exist. The AWS application runtime is not implemented, so the publisher and sweeper currently have no application-created outbox events to process.
+
+- Function `claimflow-outbox-sweeper` (`outboxSweeper` on the stack): Node.js 24, ARM64, 256 MB, 60-second timeout, tracing disabled, bundled like the other functions. The entry point is `services/api/src/adapters/aws/outbox-sweeper-lambda.ts`; its environment holds `CLAIMFLOW_TABLE_NAME` and `CLAIMFLOW_EVENT_BUS_NAME`.
+- Log group `/aws/lambda/claimflow-outbox-sweeper` (`outboxSweeperLogGroup`) with 30-day retention.
+- The function's own execution role allows only: log writes to that log group; `dynamodb:Query` on the `GSI4` index; `dynamodb:GetItem` and `dynamodb:UpdateItem` on the table ARN; and `events:PutEvents` on the `claimflow` bus. It has no stream, S3, or SQS permission.
+- The enabled rule `claimflow-outbox-sweeper-schedule` (`outboxSweeperSchedule`) on the default bus runs `rate(15 minutes)`. The sweeper is its only target, with 2 retry attempts and a maximum event age of 1 hour; CDK generates the Lambda invocation permission.
+- There is no failure queue: unpublished items remain pending and later scheduled runs retry them.
+
 ### Outputs
 
 | Output                      | Value                                                                  |
@@ -213,7 +224,7 @@ The stack defines the receipt janitor (section 11 of the architecture document).
 | `EventBusName`              | The name of the `claimflow` event bus                                  |
 | `CleanupQueueUrl`           | The URL of the cleanup queue                                           |
 
-Apart from the CloudFront read grant on the web assets bucket and the cleanup worker, outbox publisher, and receipt janitor roles, the stack grants no IAM permissions and contains no other Lambda functions, API Gateway resources, or other resources yet. The queue policies above are generated resource policies, not IAM roles.
+Apart from the CloudFront read grant on the web assets bucket and the cleanup worker, outbox publisher, receipt janitor, and outbox sweeper roles, the stack grants no IAM permissions and contains no other Lambda functions, API Gateway resources, or other resources yet. The queue policies above are generated resource policies, not IAM roles.
 
 ## Useful commands
 
