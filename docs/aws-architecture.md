@@ -316,6 +316,7 @@ All values are fictional. Money is stored in integer minor units.
 Idempotency records and outbox events have their own pure codecs, which share the same validation and safe error messages:
 
 - **Idempotency records** (`dynamodb-idempotency-items.ts`): a `COMPLETED` result has a 2xx status and a `REJECTED` result a 4xx status. A `204` response has no `body` attribute; every other response has a JSON-compatible body that DynamoDB can store, nested at most 30 levels deep and at most 300 KB of UTF-8 canonical JSON; its shape is checked with bounded work before it is serialized. The actor ID and idempotency key come from the key and are validated with the API's ID and `Idempotency-Key` rules. The fingerprint is lower-case SHA-256 hex, and `expiresAt` is whole epoch seconds exactly 24 hours after `createdAt` (`idempotencyRetentionMs`).
+- **Receipt metadata** (`dynamodb-receipt-items.ts`): a persistence lifecycle separate from the domain `Receipt` and `UploadedReceipt`. Every state has the receipt ID, owner, a file name already in the domain's sanitized form, and the upload time, and no index attributes. A `PENDING` item has the declared type, size, and checksum, `objectKey = uploads/pending/<receiptId>`, and `expiresAt` exactly 24 hours after `uploadedAt`. An `ATTACHED` item has the measured values, `attachedClaimId`, and `objectKey = receipts/<receiptId>`, with no `expiresAt`. `REPLACED` and `REMOVED` items keep the measured values and claim and add an `expiresAt`, which `retiredReceiptExpiresAt` derives 30 days after the state change. Each state's required attributes are enforced and every other state's attributes are rejected; types are PDF, JPEG, or PNG, and sizes run from 1 byte to 10 MB.
 - **Outbox events** (`dynamodb-outbox-items.ts`): the application envelope is kept separate from the persistence state. A `PENDING` event has `GSI4PK = OUTBOX#PENDING` and `GSI4SK = <occurredAt>#<eventId>`, with no `publishedAt` or `expiresAt`. A `PUBLISHED` event has no index attributes, a `publishedAt` no earlier than `occurredAt`, and `expiresAt` exactly 7 days later. Claim and cleanup events use `PK = CLAIM#<claimId>` and category events `PK = CATEGORIES`. Decoding checks every event type's exact payload fields, so no free text can be stored. Payload identities must match the aggregate, `previousEventVersion` must be `null` or below the aggregate version and `null` for internal events, correlation and causation IDs follow the `X-Correlation-Id` rule, and the cleanup `objectKey` must be `receipts/<receiptId>`.
 
 ### User profile
@@ -351,11 +352,13 @@ Pending, before attachment:
   "declaredChecksumSha256": "9f2c…",
   "objectKey": "uploads/pending/r-7731",
   "uploadedAt": "2026-10-14T10:35:00.000Z",
-  "expiresAt": 1792062900
+  "expiresAt": 1792060500
 }
 ```
 
 After attachment, the same item has `state: ATTACHED`, `attachedClaimId`, `objectKey: receipts/r-7731`, the measured `contentType`, `sizeBytes`, and `checksumSha256`, and no `expiresAt`. A replaced or removed receipt has `state: REPLACED` or `REMOVED` and an `expiresAt` 30 days later.
+
+Only a `PENDING` item carries the `declared*` attributes; the update that attaches the receipt removes them, so `ATTACHED`, `REPLACED`, and `REMOVED` items carry only the measured values.
 
 ### Idempotency record
 

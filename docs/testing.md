@@ -144,6 +144,14 @@ Against an in-memory fake table that applies key order, `Limit`, `ExclusiveStart
 - rejection of wrong keys, event types, schema versions, sources, aggregates, previous event versions, payload identities, missing or invalid payload fields, and index attributes;
 - no free-text field in any outbox item, and errors that never echo payload values or malformed keys.
 
+## DynamoDB receipt metadata (`services/api/test/dynamodb-receipt-items.test.ts`)
+
+- the approved pending example encoded exactly, and round trips of `PENDING`, `ATTACHED`, `REPLACED`, and `REMOVED` items with no index attributes or undefined values;
+- the 24-hour pending and 30-day retired TTL helpers, and pending TTLs that are not exactly 24 hours rejected;
+- every supported content type and the 1-byte and 10 MB size boundaries;
+- rejection of wrong keys, IDs, entity types, states, timestamps, TTLs, content types, sizes, checksums, and object keys, of missing, forbidden, and unexpected state attributes, and of index attributes;
+- unsanitized file names refused and rejected in every state, and errors that never reveal file names or malformed keys.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

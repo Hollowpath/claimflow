@@ -458,8 +458,14 @@ export const invalidKeyIdentifier = '(with an invalid key)';
 
 const isKeyId = (value: string) => idSchema.safeParse(value).success;
 
-/** `CLAIM#<id>`, `CATEGORIES`, or `IDEMPOTENCY#<actorId>#<key>`. */
+/**
+ * `CLAIM#<id>`, `CATEGORIES`, `RECEIPT#<id>`, or
+ * `IDEMPOTENCY#<actorId>#<key>`.
+ */
 function isSafePartitionKey(value: string): boolean {
+  if (value.startsWith('RECEIPT#')) {
+    return isKeyId(value.slice('RECEIPT#'.length));
+  }
   if (value.startsWith('IDEMPOTENCY#')) {
     const [actorId = '', key = '', ...rest] = value
       .slice('IDEMPOTENCY#'.length)
@@ -477,8 +483,8 @@ function isSafePartitionKey(value: string): boolean {
 }
 
 /**
- * `CLAIM`, `HISTORY#` and 10 digits, `CATEGORY#<id>`, `IDEMPOTENCY`, or
- * `OUTBOX#<timestamp>#<id>`.
+ * `CLAIM`, `HISTORY#` and 10 digits, `CATEGORY#<id>`, `RECEIPT`,
+ * `IDEMPOTENCY`, or `OUTBOX#<timestamp>#<id>`.
  */
 function isSafeSortKey(value: string): boolean {
   if (value.startsWith('OUTBOX#')) {
@@ -489,6 +495,7 @@ function isSafeSortKey(value: string): boolean {
   }
   return (
     value === 'CLAIM' ||
+    value === 'RECEIPT' ||
     value === 'IDEMPOTENCY' ||
     /^HISTORY#\d{10}$/.test(value) ||
     (value.startsWith('CATEGORY#') && isKeyId(value.slice('CATEGORY#'.length)))
