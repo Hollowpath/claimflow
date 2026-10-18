@@ -292,6 +292,12 @@ Using DynamoDB stream records built with the real marshaller:
 - the first failure chosen in stream order from decoding and workflow failures, with exactly one entry in the response;
 - a missing sequence number or an oversized batch throwing before anything is published.
 
+## Outbox sweeper (`services/api/test/outbox-sweeper.test.ts`)
+
+- one clock reading, a cutoff exactly five minutes earlier, and a single query for up to 10 events;
+- empty results returning without publishing, events passed in query order with their event IDs as unique sequence numbers, batches of 1 and 10, and a deterministic result;
+- reported failures turned into one fixed safe error without retrying, and query, clock, and workflow errors propagated unchanged.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
