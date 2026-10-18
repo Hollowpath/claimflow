@@ -94,6 +94,19 @@ The AWS `UserDirectory` adapter against an in-memory fake document client, with 
 - unprocessed keys retried with exponential, capped backoff, and a clear failure after the attempt limit;
 - only `GetItem` and `BatchGetItem` are ever sent, and the real document client satisfies the adapter's client type.
 
+## Commit envelope and outbox events (`services/api/test/commit-envelope.test.ts`)
+
+- TTL values as whole Unix epoch seconds, rounded down, and typed as numbers;
+- every field of the completed request, category guard, and commit options;
+- exactly the approved event types, their routing (publishable or internal) and aggregate type, the envelope fields, and `previousEventVersion` typed as a number or `null`, and `null` for internal events;
+- no free-text or personal fields in any event payload type or fixture.
+
+## Transaction request tokens (`services/api/test/transaction-token.test.ts`)
+
+- canonical JSON: sorted keys at every level, preserved array order, and rejection, with the path, of `undefined`, functions, symbols, big integers, non-finite numbers, sparse arrays, cycles, and non-plain objects;
+- tokens of exactly 32 lowercase hexadecimal characters, computed as designed, stable for identical or rebuilt payloads regardless of key order, time, or randomness;
+- a different token for any change of actor, idempotency key, fingerprint, category version, timestamp, event ID, claim ID, or item order, and for identity fields that would otherwise run together.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

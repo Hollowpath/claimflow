@@ -362,7 +362,7 @@ After attachment, the same item has `state: ATTACHED`, `attachedClaimId`, `objec
     "body": { "claimId": "4ce0c74b-…", "version": 4 }
   },
   "createdAt": "2026-10-14T10:41:00.000Z",
-  "expiresAt": 1792062900
+  "expiresAt": 1792060860
 }
 ```
 
@@ -480,6 +480,8 @@ Rules:
 - **Same payload, same token.** An identical transaction payload always produces the same token. This holds whether the SDK retries the request automatically, the ambiguous-failure procedure retries it (section 10), or a fresh service invocation rebuilds an identical payload. No in-memory counter is needed, so determinism does not depend on state surviving a later client request or Lambda invocation.
 - **Changed payload, new token.** Any rebuilt payload that differs in any transaction value, such as a different category version, timestamp, generated event ID, claim ID, or other value, produces a different token automatically.
 - **One token, one payload.** Because the token is derived from the payload, a token is never paired with a different payload. If DynamoDB ever reports `IdempotentParameterMismatchException`, it is treated as a programming error.
+- **Canonical form.** Object keys are sorted at every level and array order is kept. Only JSON values are accepted: `undefined`, functions, symbols, big integers, non-finite numbers, sparse arrays, cycles, and objects other than plain objects and arrays are rejected, so no payload can produce an unstable token. The four hashed values are encoded as a JSON array, so they cannot run into each other.
+- **Implementation.** `transactionRequestToken` and `canonicalJson` in `services/api/src/adapters/aws/transaction-token.ts` are pure functions with no AWS client, time, or randomness.
 - **Two layers of idempotency.** DynamoDB honors a request token only for a short window and only at the transport level, so a resent identical request is not applied twice. Differently constructed transactions for the same application idempotency key carry different tokens, so DynamoDB does not deduplicate them; the conditional `Put` of the idempotency record in the table is what prevents two of them from both committing. That record remains the durable application result for 24 hours and is what client retries are answered from.
 
 ## 9. Conditional writes and category guards
@@ -924,10 +926,12 @@ Write methods accept a commit envelope built by the services:
 ```ts
 interface CommitOptions {
   readonly events: readonly OutboxEvent[];
-  readonly idempotency?: CompletedRequest; // actorId, key, fingerprint, response, expiresAt
+  readonly idempotency?: CompletedRequest; // actorId, key, fingerprint, response, createdAt, expiresAt
   readonly categoryGuard?: CategoryGuard; // categoryId, readVersion, mustBeActive
 }
 ```
+
+These types are defined in `services/api/src/application/commit.ts`, and the outbox envelope, event types, and payloads in `services/api/src/application/events.ts`. `expiresAt` is a TTL in whole Unix epoch seconds (`toEpochSeconds`, `expiresAfter`), never an ISO string. `aggregate.previousEventVersion` is a number or `null`, and always `null` for internal cleanup events. Event payloads carry identifiers, amounts, categories, and timestamps only, never merchants, business purposes, comments, or names. Repositories, idempotency, and services do not use these types yet.
 
 The local JSON database already applies each write atomically, so the local adapters provide the same all-or-nothing behavior as the DynamoDB adapters.
 
