@@ -902,6 +902,8 @@ The category builders in `services/api/src/application/category-events.ts` produ
 
 `DynamoDbPendingOutbox` in `services/api/src/adapters/aws/dynamodb-pending-outbox.ts` is the sweeper's query (access pattern O1). `listPending(cutoff, limit)` sends one eventually consistent `Query` on `GSI4` for `GSI4PK = OUTBOX#PENDING` and `GSI4SK < <cutoff>`, oldest first, with `Limit` between 1 and 10 and no filter, scan, or pagination cursor. Because `GSI4SK` is `<occurredAt>#<eventId>`, an event that occurred exactly at the cutoff is not returned. Every item is decoded strictly by the outbox codec, and one that is not pending raises `ItemIntegrityError`. The table name, a canonical cutoff, and the limit are validated before any command, and SDK errors propagate unchanged. The schedule, the publishing, and the handlers are separate increments.
 
+`EventBridgePublisher` in `services/api/src/adapters/aws/eventbridge-publisher.ts` performs the `PutEvents` call of the publisher and sweeper. `publish` takes 1 to 10 outbox events, validates each with the outbox codec, and sends one `PutEventsCommand` whose entries, in input order, have the injected bus name, `Source = claimflow.api`, `DetailType` equal to the event type, and the complete JSON envelope as `Detail`. An empty or oversized batch, an invalid event, or a missing bus name sends nothing. The SDK result is returned unchanged, so the workflow can read `FailedEntryCount` and the per-entry errors; the adapter does not retry, mark events published, or log, and SDK errors propagate unchanged.
+
 ### Publisher (stream path)
 
 - **Trigger:** the table stream (`NEW_AND_OLD_IMAGES`) through a Lambda event source mapping with this filter:

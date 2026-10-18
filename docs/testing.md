@@ -269,6 +269,12 @@ Against a fake client that applies the approved condition to an existing item:
 - empty results, limits of 1 and 10, ordering by time and then event ID, and strict decoding of every item with published, malformed, free-text, and unexpected items rejected;
 - invalid table names, cutoffs, and limits rejected before any command, and SDK errors propagated unchanged.
 
+## EventBridge publisher (`services/api/test/eventbridge-publisher.test.ts`)
+
+- the exact `PutEvents` entries and order for every event family, with the full envelope (not a stored item) as the detail;
+- batches of 1 and 10 accepted, and empty, oversized, and invalid batches and bus names rejected before any command;
+- the SDK result, including failed entries, returned unchanged, and SDK errors propagated unchanged without a retry.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
