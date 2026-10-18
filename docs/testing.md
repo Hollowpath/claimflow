@@ -222,6 +222,13 @@ Against a fake client that applies the approved condition to an existing item:
 - missing objects recognized by error name or status and not by message, and unrelated SDK failures propagated unchanged;
 - validation before any command, errors that expose no bucket, key, name, or value, and at most two read-only commands.
 
+## S3 receipt objects (`services/api/test/s3-receipt-objects.test.ts`)
+
+- the exact `CopyObject` request (same bucket, pending source, final key, metadata copied, SHA-256 requested) and the declared checksum matched against the result, with missing, malformed, and different checksums rejected;
+- missing sources recognized by error name or status and not by message, and unrelated S3 failures propagated unchanged;
+- the exact pending and final `DeleteObject` requests, with no preliminary read and success for missing objects;
+- invalid buckets, records, and receipt IDs rejected before any command, fixed error messages without sensitive values, and only `CopyObject` and `DeleteObject` ever sent.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

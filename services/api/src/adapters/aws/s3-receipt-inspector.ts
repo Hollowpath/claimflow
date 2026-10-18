@@ -149,7 +149,7 @@ export class S3ReceiptInspector {
 }
 
 /** By error name or HTTP status only, never by message text. */
-function isMissingObject(error: unknown): boolean {
+export function isMissingObject(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) {
     return false;
   }
@@ -165,7 +165,7 @@ function isMissingObject(error: unknown): boolean {
 }
 
 /** S3's base64 SHA-256 as canonical lower-case hex, or `undefined`. */
-function base64ToHex(checksum: string | undefined): string | undefined {
+export function base64ToHex(checksum: string | undefined): string | undefined {
   if (checksum === undefined || !/^[A-Za-z0-9+/]{43}=$/.test(checksum)) {
     return undefined;
   }
