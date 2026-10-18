@@ -37,7 +37,12 @@ import type {
   ReceiptStorage,
   UserDirectory,
 } from './ports.js';
-import { loadNames, toClaimDto, toHistoryDto } from './presenters.js';
+import {
+  claimUserIds,
+  loadNames,
+  toClaimDto,
+  toHistoryDto,
+} from './presenters.js';
 
 export interface ClaimServiceDependencies {
   readonly claims: ClaimRepository;
@@ -207,10 +212,8 @@ export class ClaimService {
     page: PageQuery,
   ): Promise<Page<ClaimHistoryEntryDto>> {
     await loadVisibleClaim(this.deps.claims, actor, claimId);
-    const [entries, names] = await Promise.all([
-      this.deps.claims.listHistory(claimId, page),
-      this.names(),
-    ]);
+    const entries = await this.deps.claims.listHistory(claimId, page);
+    const names = await this.names(entries.items.map((entry) => entry.actorId));
     return {
       items: entries.items.map((entry) => toHistoryDto(entry, names)),
       ...(entries.nextCursor === undefined
@@ -240,19 +243,19 @@ export class ClaimService {
     return { actor, now: this.deps.clock.now().toISOString() };
   }
 
-  private names() {
-    return loadNames(this.deps.users, this.deps.categories);
+  private names(userIds: Iterable<string>) {
+    return loadNames(this.deps.users, this.deps.categories, userIds);
   }
 
   private async present(claim: Claim, actor: Actor): Promise<ClaimDto> {
-    return toClaimDto(claim, actor, await this.names());
+    return toClaimDto(claim, actor, await this.names(claimUserIds(claim)));
   }
 
   private async presentPage(
     page: { items: readonly Claim[]; nextCursor?: string },
     actor: Actor,
   ): Promise<Page<ClaimDto>> {
-    const names = await this.names();
+    const names = await this.names(page.items.flatMap(claimUserIds));
     return {
       items: page.items.map((claim) => toClaimDto(claim, actor, names)),
       ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),

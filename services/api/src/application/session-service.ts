@@ -5,11 +5,21 @@ import type {
 } from '@claimflow/contracts';
 import type { Actor } from '@claimflow/domain';
 
-import type { UserDirectory, UserProfile } from './ports.js';
+import type {
+  DevelopmentUserCatalogue,
+  UserDirectory,
+  UserProfile,
+} from './ports.js';
 
-/** Resolves signed-in users to actors loaded from the user directory. */
+/**
+ * Resolves signed-in users to actors loaded from the user directory. Only the
+ * local runtime passes a development catalogue, for its user chooser.
+ */
 export class SessionService {
-  public constructor(private readonly users: UserDirectory) {}
+  public constructor(
+    private readonly users: UserDirectory,
+    private readonly developmentUsers?: DevelopmentUserCatalogue,
+  ) {}
 
   /**
    * The actor for a user ID: a development sample user ID locally, or the
@@ -20,17 +30,19 @@ export class SessionService {
     return profile === undefined ? undefined : toActor(profile);
   }
 
-  /** The signed-in user and every selectable development user. */
+  /**
+   * The signed-in user and every selectable development user. Local runtime
+   * only: it fails without a development catalogue.
+   */
   public async describe(actor: Actor | undefined): Promise<SessionDto> {
-    const profiles = await this.users.list();
-    const users = profiles.map(toSummary);
-    if (actor === undefined) {
-      return { user: null, users };
+    if (this.developmentUsers === undefined) {
+      throw new Error('No development user catalogue is configured.');
     }
-
-    const profile = profiles.find((p) => p.userId === actor.userId);
-    const manager = profiles.find((p) => p.userId === actor.managerId);
-    return { user: toCurrentUser(actor, profile, manager), users };
+    const [{ user }, profiles] = await Promise.all([
+      this.describeSignedIn(actor),
+      this.developmentUsers.list(),
+    ]);
+    return { user, users: profiles.map(toSummary) };
   }
 
   /** The signed-in user only; no other users are listed. */

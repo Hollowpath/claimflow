@@ -20,16 +20,23 @@ import type { CategoryRepository, UserDirectory } from './ports.js';
 
 /** Display names needed to present claims, loaded once per request. */
 export interface Names {
+  /** A user from the loaded IDs; any other user is "Unknown user". */
   person(userId: string): PersonRef;
   categoryName(categoryId: string): string | undefined;
 }
 
+/**
+ * Loads the names of only the given users, each requested once, in one
+ * `getMany` call. Profiles are matched by ID, whatever order they arrive in.
+ */
 export async function loadNames(
   users: UserDirectory,
   categories: CategoryRepository,
+  userIds: Iterable<string>,
 ): Promise<Names> {
+  const ids = [...new Set(userIds)];
   const [userList, categoryList] = await Promise.all([
-    users.list(),
+    ids.length === 0 ? [] : users.getMany(ids),
     categories.list(),
   ]);
   const userNames = new Map(userList.map((u) => [u.userId, u.displayName]));
@@ -43,6 +50,13 @@ export async function loadNames(
     }),
     categoryName: (categoryId) => categoryNames.get(categoryId),
   };
+}
+
+/** The users a claim presents: its employee and assigned manager. */
+export function claimUserIds(claim: Claim): string[] {
+  return claim.assignedManagerId === undefined
+    ? [claim.employeeId]
+    : [claim.employeeId, claim.assignedManagerId];
 }
 
 export function toClaimDto(claim: Claim, actor: Actor, names: Names): ClaimDto {

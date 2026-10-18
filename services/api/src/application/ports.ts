@@ -72,8 +72,25 @@ export interface UserProfile {
   readonly managerId?: string;
 }
 
+/**
+ * User profiles, read only by ID, so the DynamoDB adapter can use `GetItem`
+ * and `BatchGetItem` and never needs to scan every user.
+ */
 export interface UserDirectory {
   get(userId: string): Promise<UserProfile | undefined>;
+  /**
+   * The profiles of the given users, in no particular order. IDs without a
+   * profile are left out, and repeated IDs return one profile. Every existing
+   * profile is returned; an adapter retries keys its store did not process.
+   */
+  getMany(userIds: readonly string[]): Promise<readonly UserProfile[]>;
+}
+
+/**
+ * Development only: the sample users offered by the local user chooser. The
+ * AWS runtime has no catalogue and never lists users.
+ */
+export interface DevelopmentUserCatalogue {
   list(): Promise<readonly UserProfile[]>;
 }
 

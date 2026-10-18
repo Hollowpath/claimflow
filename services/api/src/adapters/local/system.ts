@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type {
   Clock,
+  DevelopmentUserCatalogue,
   IdGenerator,
   LogFields,
   Logger,
@@ -51,11 +52,22 @@ export const silentLogger: Logger = {
   error: () => undefined,
 };
 
-export class StaticUserDirectory implements UserDirectory {
+/**
+ * The fixed sample users: the local user directory, and the development
+ * catalogue that the local user chooser lists.
+ */
+export class StaticUserDirectory
+  implements UserDirectory, DevelopmentUserCatalogue
+{
   public constructor(private readonly users: readonly UserProfile[]) {}
 
   public get(userId: string): Promise<UserProfile | undefined> {
     return Promise.resolve(this.users.find((u) => u.userId === userId));
+  }
+
+  public getMany(userIds: readonly string[]): Promise<readonly UserProfile[]> {
+    const wanted = new Set(userIds);
+    return Promise.resolve(this.users.filter((u) => wanted.has(u.userId)));
   }
 
   public list(): Promise<readonly UserProfile[]> {

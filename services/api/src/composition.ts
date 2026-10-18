@@ -80,7 +80,8 @@ export async function createLocalApplication({
       logger,
     }),
     categories: new CategoryService({ categories, claims, clock, ids }),
-    sessions: new SessionService(users),
+    // The sample users are both the directory and the development catalogue.
+    sessions: new SessionService(users, users),
     idempotency: new Idempotency(new LocalIdempotencyStore(db, clock), clock),
     logger,
   };

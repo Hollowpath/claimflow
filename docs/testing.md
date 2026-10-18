@@ -75,6 +75,15 @@ The AWS API handler and route set against the local adapters:
 - `GET /session` on AWS describes only the signed-in user, with an empty `users` list;
 - local development sessions still select, describe, and clear a sample user.
 
+## User directory (`services/api/test/user-directory.test.ts`)
+
+The `get`/`getMany` directory port and the development-only user catalogue, with a recording directory that cannot list users and returns profiles in reverse order:
+
+- the static directory's `get` and `getMany` (only requested, deduplicated, unknown IDs omitted) and its development catalogue;
+- `loadNames` requests each needed user once, matches names by ID, and skips `getMany` when no users are needed;
+- claim, page, history, and receipt presentation request only the employees, assigned managers, and history actors shown, in one call;
+- local session descriptions list the development users, while signed-in descriptions never use the catalogue, which may be absent.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

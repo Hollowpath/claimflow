@@ -30,7 +30,12 @@ import type {
   ReceiptStorage,
   UserDirectory,
 } from './ports.js';
-import { loadNames, toClaimDto, toUploadedReceiptDto } from './presenters.js';
+import {
+  claimUserIds,
+  loadNames,
+  toClaimDto,
+  toUploadedReceiptDto,
+} from './presenters.js';
 
 export interface ReceiptServiceDependencies {
   readonly claims: ClaimRepository;
@@ -203,7 +208,11 @@ export class ReceiptService {
     return toClaimDto(
       change.claim,
       actor,
-      await loadNames(this.deps.users, this.deps.categories),
+      await loadNames(
+        this.deps.users,
+        this.deps.categories,
+        claimUserIds(change.claim),
+      ),
     );
   }
 }
