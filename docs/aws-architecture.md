@@ -546,6 +546,13 @@ A claim write that depends on category policy must fail if the category changed 
 
 The condition texts are exported constants. Guards must require an active category; a `CategoryGuard` with `mustBeActive: false` is refused rather than reinterpreted. Category IDs and versions are validated before an operation is returned, and category values are validated by the category codec.
 
+**Claim operation builders.** `services/api/src/adapters/aws/dynamodb-claim-operations.ts` builds the claim and history operations, without sending them:
+
+- **Create:** `Put` of the codec-encoded claim, which must be a `DRAFT` at version 1, with a `CREATE` history entry that has no `fromStatus` and results in `DRAFT`, both conditioned on `attribute_not_exists(PK)`. There is no `lastEventVersion`, because creation is not published.
+- **Update:** an `Update` that `SET`s every attribute of the codec-encoded new claim and `REMOVE`s every other claim attribute. This covers optional fields and the sparse GSI2, so the stored item becomes exactly the encoded claim; `PK` and `SK` are never touched, and every attribute is named through `ExpressionAttributeNames` in a fixed order. It is followed by the history `Put`. The new version must be `expectedVersion + 1`. The history entry must match the claim's ID, version, and status, and the action's transition in `claimTransitions` (draft and receipt changes stay in `DRAFT`). Lifecycle actions set `lastEventVersion` to the new version; draft and receipt changes keep the stored value. The stored value, read with the claim at `expectedVersion`, must be absent or a whole number from 0 to `expectedVersion` for every action.
+- **Conditions:** owner actions (edit, receipt changes, submit, reopen) require `#version = :expectedVersion AND #employeeId = :actorId`; review actions (start review, approve, reject) require the assigned manager instead. Marking paid requires only the version, because the administrator role is checked by the application.
+- **Delete draft:** a `Delete` of an owned draft that was never submitted, at its current version, with the condition in the table above. History is purged afterwards by the cleanup worker (section 12).
+
 **When recovery finds that the category changed** (section 10), the service runs the category decision once more with the reread category, within the same request and idempotency key; nothing was committed. A deactivated category or a lowered limit then produces the normal `400 VALIDATION_FAILED`. If the category changes again before the second commit, the request returns `409 VERSION_CONFLICT`.
 
 ## 10. Idempotency

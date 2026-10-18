@@ -184,6 +184,14 @@ Against a fake client that applies the approved condition to an existing item:
 - deletion only at the expected version with an unused counter, guarded increments, underflow-safe decrements, and the separate version and active check;
 - every operation on the injected table and category key, no free text in conditions or errors, use with the transaction composer, and no DynamoDB command sent.
 
+## DynamoDB claim operations (`services/api/test/dynamodb-claim-operations.test.ts`)
+
+- the exact create, update, history, and delete operations and their exported conditions;
+- for every update action, applying the generated `SET` and `REMOVE` to the stored item yields exactly the codec-encoded new claim, including GSI2 added for open claims and removed otherwise, and optional fields and receipts added, changed, or removed;
+- owner, manager, and version-only conditions for every history action, and `lastEventVersion` set by lifecycle actions and preserved by draft and receipt changes;
+- refused mismatched IDs, versions, statuses, and transitions, `CREATE` or unknown actions, invalid or overflowing versions, and deletes of submitted, reopened, or foreign drafts;
+- use with category operations and the transaction composer, no free text in keys, conditions, or errors, and no DynamoDB command sent.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

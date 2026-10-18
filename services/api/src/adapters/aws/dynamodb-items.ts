@@ -150,7 +150,8 @@ export function claimIndexAttributes(claim: Claim): Record<string, string> {
 
 // Claims
 
-const claimAttributes = new Set([
+/** Every attribute a claim item may have, in a fixed order. */
+export const claimAttributeNames = [
   'PK',
   'SK',
   'entityType',
@@ -171,7 +172,9 @@ const claimAttributes = new Set([
   'submittedAt',
   'reviewedAt',
   ...indexAttributes,
-]);
+] as const;
+
+const claimAttributes = new Set<string>(claimAttributeNames);
 
 export function encodeClaimItem(
   claim: Claim,
