@@ -308,6 +308,14 @@ Using TTL removal records built with the real marshaller and `S3ReceiptObjects` 
 - both deletions attempted when either or both fail, other records still processed, and the first failure reported in stream order;
 - a candidate without a sequence number throwing a fixed message before anything is deleted.
 
+## DynamoDB history purger (`services/api/test/dynamodb-history-purger.test.ts`)
+
+- the exact keys-only, ascending, strongly consistent partition query with no scan, filter, or index, following all pages, including an empty page with a continuation key;
+- no history, one entry, 25 entries, and more than 25 split into correct batches, within and across pages, and idempotent repeated purges;
+- boundary history keys accepted, and wrong partitions, malformed or extra keys rejected before anything on the page is deleted, with errors that name no key, claim, or table;
+- only unprocessed requests resent with capped exponential backoff, and the fixed error after the attempt limit;
+- query and write errors propagated unchanged, and invalid table names and claim IDs rejected before any command.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

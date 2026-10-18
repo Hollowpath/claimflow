@@ -775,6 +775,8 @@ Before the AWS receipt adapter is relied on, the opt-in integration suite (secti
 
 History rows may remain briefly after the deletion commits. They are unreachable through the API. The claim's outbox items are not deleted by the worker; they expire after publication (section 14).
 
+`DynamoDbHistoryPurger` in `services/api/src/adapters/aws/dynamodb-history-purger.ts` is the purge itself, without the SQS handler or any client. `purge(claimId)` validates the table name and claim ID before any command, then queries the claim partition for `HISTORY#` keys, strongly consistent, ascending, keys only, with no filter or index, following every page, including empty pages that carry a continuation key. Each page is checked before anything on it is deleted: a returned item must have exactly `PK` and `SK`, the claim's partition, and `HISTORY#` plus ten digits, or `HistoryPurgeError` is raised. Keys are deleted with `BatchWriteItem` in batches of at most 25, resending only `UnprocessedItems` with capped exponential backoff and an injectable sleep, and failing with `HistoryPurgeError` after six attempts. Purging a claim with no history, or purging twice, succeeds. SDK errors propagate unchanged, and the error messages are fixed and name no table, claim, or key.
+
 ## 13. Pagination and cursor validation
 
 ### Pages
