@@ -21,6 +21,7 @@ The stack defines these resources:
 | EventBridge bus `claimflow`, cleanup queue and dead-letter queue    | Defined and deployed in `ap-southeast-1` |
 | Cleanup worker Lambda, its role, log group and queue mapping        | Defined and deployed in `ap-southeast-1` |
 | Outbox publisher Lambda, role, log group, failure queue and mapping | Defined and deployed in `ap-southeast-1` |
+| Receipt janitor Lambda, role, log group, failure queue and mapping  | Defined and deployed in `ap-southeast-1` |
 
 ### DynamoDB table `ClaimFlow`
 
@@ -190,6 +191,16 @@ The stack defines the outbox publisher (section 15 of the architecture document)
 - Failure queue `claimflow-outbox-publisher-failures` (`outboxFailureQueue`): standard, SQS-managed encryption, TLS enforced, 14-day retention.
 - A DynamoDB stream event-source mapping: starting at `LATEST`, batch size 10, partial batch failure reporting, batch bisection, 5 retry attempts, maximum record age 24 hours, the failure queue as the failure destination, and a filter for `INSERT` records whose `SK` begins with `OUTBOX#`.
 
+### Receipt janitor
+
+The stack defines the receipt janitor (section 11 of the architecture document). It is defined and deployed in `ap-southeast-1`. The table stream now has two consumers: the outbox publisher and the receipt janitor. The scheduled outbox sweeper is not connected yet. The AWS application runtime does not exist yet, so nothing creates pending receipt records and the janitor stays idle.
+
+- Function `claimflow-receipt-janitor` (`receiptJanitor` on the stack): Node.js 24, ARM64, 256 MB, 60-second timeout, tracing disabled, bundled like the other functions. The entry point is `services/api/src/adapters/aws/receipt-janitor-lambda.ts`; its environment holds `CLAIMFLOW_RECEIPT_BUCKET_NAME`.
+- Log group `/aws/lambda/claimflow-receipt-janitor` (`receiptJanitorLogGroup`) with 30-day retention.
+- The function's own execution role allows only: log writes to that log group; `s3:DeleteObject` on `receipts/*` and `uploads/pending/*` in the receipt bucket; reading the table stream (`DescribeStream`, `GetRecords`, `GetShardIterator`, `ListStreams` on the stream ARN); and sending to the failure queue. It has no permission on table items.
+- Failure queue `claimflow-receipt-janitor-failures` (`janitorFailureQueue`): standard, SQS-managed encryption, TLS enforced, 14-day retention.
+- A DynamoDB stream event-source mapping: starting at `LATEST`, batch size 10, partial batch failure reporting, batch bisection, 5 retry attempts, maximum record age 24 hours, the failure queue as the failure destination, and a filter for `REMOVE` records made by the `dynamodb.amazonaws.com` service whose old image is a `PENDING` `Receipt` (a TTL expiry).
+
 ### Outputs
 
 | Output                      | Value                                                                  |
@@ -202,13 +213,13 @@ The stack defines the outbox publisher (section 15 of the architecture document)
 | `EventBusName`              | The name of the `claimflow` event bus                                  |
 | `CleanupQueueUrl`           | The URL of the cleanup queue                                           |
 
-Apart from the CloudFront read grant on the web assets bucket and the cleanup worker and outbox publisher roles, the stack grants no IAM permissions and contains no other Lambda functions, API Gateway resources, or other resources yet. The queue policies above are generated resource policies, not IAM roles.
+Apart from the CloudFront read grant on the web assets bucket and the cleanup worker, outbox publisher, and receipt janitor roles, the stack grants no IAM permissions and contains no other Lambda functions, API Gateway resources, or other resources yet. The queue policies above are generated resource policies, not IAM roles.
 
 ## Useful commands
 
 - `npm run build` type-check the project
 - `npm run watch` watch for changes and type-check
-- `npm run test` run the Vitest unit tests, which synthesize the stack locally and bundle the cleanup worker with esbuild
+- `npm run test` run the Vitest unit tests, which synthesize the stack locally and bundle the Lambda functions with esbuild
 - `npx cdk synth` emit the synthesized CloudFormation template
 - `npx cdk diff` compare the deployed stack with the current state
 

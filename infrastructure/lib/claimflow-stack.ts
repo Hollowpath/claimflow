@@ -64,6 +64,9 @@ export const CLAIMFLOW_CLEANUP_WORKER_BUCKET_ENV =
 export const CLAIMFLOW_OUTBOX_PUBLISHER_NAME = 'claimflow-outbox-publisher';
 export const CLAIMFLOW_OUTBOX_FAILURE_QUEUE_NAME =
   'claimflow-outbox-publisher-failures';
+export const CLAIMFLOW_RECEIPT_JANITOR_NAME = 'claimflow-receipt-janitor';
+export const CLAIMFLOW_JANITOR_FAILURE_QUEUE_NAME =
+  'claimflow-receipt-janitor-failures';
 export const CLAIMFLOW_PUBLISHER_EVENT_BUS_ENV = 'CLAIMFLOW_EVENT_BUS_NAME';
 
 const repositoryRoot = resolve(__dirname, '../..');
@@ -122,6 +125,15 @@ export class ClaimFlowStack extends cdk.Stack {
 
   /** Receives stream batches the outbox publisher could not process. */
   public readonly outboxFailureQueue: sqs.Queue;
+
+  /** Deletes the objects of pending receipts that expired by TTL. */
+  public readonly receiptJanitor: nodejs.NodejsFunction;
+
+  /** The receipt janitor's own log group. */
+  public readonly receiptJanitorLogGroup: logs.LogGroup;
+
+  /** Receives stream batches the receipt janitor could not process. */
+  public readonly janitorFailureQueue: sqs.Queue;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, { description: CLAIMFLOW_STACK_DESCRIPTION, ...props });
@@ -486,6 +498,91 @@ export class ClaimFlowStack extends cdk.Stack {
                     prefix: string;
                   }[],
                 },
+              },
+            },
+          }),
+        ],
+      }),
+    );
+
+    // The receipt janitor, built like the outbox publisher. It never touches
+    // table items: it reads the stream and deletes receipt objects.
+    this.janitorFailureQueue = new sqs.Queue(this, 'JanitorFailureQueue', {
+      queueName: CLAIMFLOW_JANITOR_FAILURE_QUEUE_NAME,
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      retentionPeriod: cdk.Duration.days(14),
+    });
+    this.receiptJanitorLogGroup = new logs.LogGroup(
+      this,
+      'ReceiptJanitorLogGroup',
+      {
+        logGroupName: `/aws/lambda/${CLAIMFLOW_RECEIPT_JANITOR_NAME}`,
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      },
+    );
+    const receiptJanitorRole = new iam.Role(this, 'ReceiptJanitorRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+    });
+    this.receiptJanitorLogGroup.grantWrite(receiptJanitorRole);
+    receiptJanitorRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:DeleteObject'],
+        resources: [
+          this.receiptBucket.arnForObjects('receipts/*'),
+          this.receiptBucket.arnForObjects('uploads/pending/*'),
+        ],
+      }),
+    );
+    this.receiptJanitor = new nodejs.NodejsFunction(this, 'ReceiptJanitor', {
+      functionName: CLAIMFLOW_RECEIPT_JANITOR_NAME,
+      entry: resolve(
+        repositoryRoot,
+        'services/api/src/adapters/aws/receipt-janitor-lambda.ts',
+      ),
+      projectRoot: repositoryRoot,
+      depsLockFilePath: resolve(repositoryRoot, 'package-lock.json'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_24_X,
+      architecture: lambda.Architecture.ARM_64,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(60),
+      role: receiptJanitorRole,
+      logGroup: this.receiptJanitorLogGroup,
+      environment: {
+        [CLAIMFLOW_CLEANUP_WORKER_BUCKET_ENV]: this.receiptBucket.bucketName,
+      },
+      bundling: {
+        externalModules: [],
+        esbuildArgs: { '--conditions': 'source' },
+        forceDockerBundling: false,
+      },
+    });
+    this.receiptJanitor.addEventSource(
+      new lambdaEventSources.DynamoEventSource(this.table, {
+        startingPosition: lambda.StartingPosition.LATEST,
+        batchSize: 10,
+        reportBatchItemFailures: true,
+        bisectBatchOnError: true,
+        retryAttempts: 5,
+        maxRecordAge: cdk.Duration.hours(24),
+        onFailure: new lambdaEventSources.SqsDlq(this.janitorFailureQueue),
+        filters: [
+          lambda.FilterCriteria.filter({
+            eventName: lambda.FilterRule.isEqual('REMOVE') as string[],
+            userIdentity: {
+              type: lambda.FilterRule.isEqual('Service') as string[],
+              principalId: lambda.FilterRule.isEqual(
+                'dynamodb.amazonaws.com',
+              ) as string[],
+            },
+            dynamodb: {
+              OldImage: {
+                entityType: {
+                  S: lambda.FilterRule.isEqual('Receipt') as string[],
+                },
+                state: { S: lambda.FilterRule.isEqual('PENDING') as string[] },
               },
             },
           }),

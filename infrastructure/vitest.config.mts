@@ -5,5 +5,8 @@ export default defineConfig({
     environment: 'node',
     include: ['test/**/*.test.ts'],
     setupFiles: ['./test/setup.ts'],
+    // Synthesizing the stack bundles each Lambda function with esbuild.
+    hookTimeout: 120_000,
+    testTimeout: 60_000,
   },
 });

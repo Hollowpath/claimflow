@@ -9,7 +9,9 @@ import {
   CLAIMFLOW_CLEANUP_QUEUE_NAME,
   CLAIMFLOW_CLEANUP_WORKER_NAME,
   CLAIMFLOW_OUTBOX_FAILURE_QUEUE_NAME,
+  CLAIMFLOW_JANITOR_FAILURE_QUEUE_NAME,
   CLAIMFLOW_OUTBOX_PUBLISHER_NAME,
+  CLAIMFLOW_RECEIPT_JANITOR_NAME,
   CLAIMFLOW_EVENT_BUS_NAME,
   CLAIMFLOW_EVENT_SOURCE,
   CLAIMFLOW_REGION,
@@ -147,6 +149,13 @@ describe('ClaimFlowStack', () => {
           QUEUE_TYPE,
           QUEUE_TYPE,
           QUEUE_POLICY_TYPE,
+          QUEUE_POLICY_TYPE,
+          FUNCTION_TYPE,
+          MAPPING_TYPE,
+          ROLE_TYPE,
+          IAM_POLICY_TYPE,
+          LOG_GROUP_TYPE,
+          QUEUE_TYPE,
           QUEUE_POLICY_TYPE,
           FUNCTION_TYPE,
           MAPPING_TYPE,
@@ -665,9 +674,9 @@ describe('ClaimFlowStack', () => {
       template.hasResourceProperties(EVENT_BUS_TYPE, { Name: 'claimflow' });
     });
 
-    it('defines three queues in total, two for cleanup', () => {
-      template.resourceCountIs(QUEUE_TYPE, 3);
-      template.resourceCountIs(QUEUE_POLICY_TYPE, 3);
+    it('defines four queues in total, two for cleanup', () => {
+      template.resourceCountIs(QUEUE_TYPE, 4);
+      template.resourceCountIs(QUEUE_POLICY_TYPE, 4);
     });
 
     it('defines standard queues with SQS-managed encryption', () => {
@@ -833,11 +842,11 @@ describe('ClaimFlowStack', () => {
       template.toJSON().Resources[functionLogicalId].Properties;
 
     it('defines a role, policy, log group and mapping per function', () => {
-      template.resourceCountIs(FUNCTION_TYPE, 2);
-      template.resourceCountIs(ROLE_TYPE, 2);
-      template.resourceCountIs(IAM_POLICY_TYPE, 2);
-      template.resourceCountIs(LOG_GROUP_TYPE, 2);
-      template.resourceCountIs(MAPPING_TYPE, 2);
+      template.resourceCountIs(FUNCTION_TYPE, 3);
+      template.resourceCountIs(ROLE_TYPE, 3);
+      template.resourceCountIs(IAM_POLICY_TYPE, 3);
+      template.resourceCountIs(LOG_GROUP_TYPE, 3);
+      template.resourceCountIs(MAPPING_TYPE, 3);
       template.resourceCountIs('AWS::Lambda::Permission', 0);
     });
 
@@ -1183,13 +1192,226 @@ describe('ClaimFlowStack', () => {
         dynamodb: { Keys: { SK: { S: [{ prefix: 'OUTBOX#' }] } } },
       });
     });
+  });
 
-    it('is the only consumer of the table stream', () => {
-      const sources = Object.values(template.findResources(MAPPING_TYPE)).map(
-        (found) => (found as TableResource).Properties.EventSourceArn,
+  describe('receipt janitor', () => {
+    let functionLogicalId: string;
+    let roleLogicalId: string;
+    let logGroupLogicalId: string;
+    let failureQueueLogicalId: string;
+    let tableId: string;
+    let publisherLogicalId: string;
+
+    const arnOf = (logicalId: string) => ({ 'Fn::GetAtt': [logicalId, 'Arn'] });
+    const streamArn = () => ({ 'Fn::GetAtt': [tableId, 'StreamArn'] });
+    const resources = () =>
+      template.toJSON().Resources as Record<string, TableResource>;
+
+    const statements = (): Record<string, any>[] => {
+      const policies = Object.values(
+        template.findResources(IAM_POLICY_TYPE, {
+          Properties: { Roles: [{ Ref: roleLogicalId }] },
+        }),
+      ) as TableResource[];
+      expect(policies).toHaveLength(1);
+      return policies[0].Properties.PolicyDocument.Statement;
+    };
+
+    const mapping = (): TableResource => {
+      const found = Object.values(
+        template.findResources(MAPPING_TYPE, {
+          Properties: { FunctionName: { Ref: functionLogicalId } },
+        }),
+      ) as TableResource[];
+      expect(found).toHaveLength(1);
+      return found[0];
+    };
+
+    beforeAll(() => {
+      [functionLogicalId] = resourceOf(stack.receiptJanitor);
+      [logGroupLogicalId] = resourceOf(stack.receiptJanitorLogGroup);
+      [failureQueueLogicalId] = resourceOf(stack.janitorFailureQueue);
+      [publisherLogicalId] = resourceOf(stack.outboxPublisher);
+      [tableId] = Object.keys(template.findResources(TABLE_TYPE));
+      roleLogicalId =
+        resources()[functionLogicalId].Properties.Role['Fn::GetAtt'][0];
+    });
+
+    it('configures the function', () => {
+      expect(CLAIMFLOW_RECEIPT_JANITOR_NAME).toBe('claimflow-receipt-janitor');
+      template.hasResourceProperties(FUNCTION_TYPE, {
+        FunctionName: 'claimflow-receipt-janitor',
+        Runtime: 'nodejs24.x',
+        Architectures: ['arm64'],
+        MemorySize: 256,
+        Timeout: 60,
+        Handler: 'index.handler',
+        Role: arnOf(roleLogicalId),
+        LoggingConfig: { LogGroup: { Ref: logGroupLogicalId } },
+      });
+      const properties = resources()[functionLogicalId].Properties;
+      expect(properties).not.toHaveProperty('TracingConfig');
+      expect(properties).not.toHaveProperty('ReservedConcurrentExecutions');
+      expect(properties).not.toHaveProperty('Layers');
+      expect(properties.Code).toHaveProperty('S3Key');
+    });
+
+    it('passes only the receipt bucket name', () => {
+      expect(resources()[functionLogicalId].Properties.Environment).toEqual({
+        Variables: { CLAIMFLOW_RECEIPT_BUCKET_NAME: { Ref: bucketLogicalId } },
+      });
+    });
+
+    it('has a dedicated log group with 30 day retention', () => {
+      template.hasResourceProperties(LOG_GROUP_TYPE, {
+        LogGroupName: '/aws/lambda/claimflow-receipt-janitor',
+        RetentionInDays: 30,
+      });
+    });
+
+    it('has its own role, assumed only by Lambda, with no managed policies', () => {
+      const publisherRole =
+        resources()[publisherLogicalId].Properties.Role['Fn::GetAtt'][0];
+      expect(roleLogicalId).not.toBe(publisherRole);
+      const role = resources()[roleLogicalId].Properties;
+      expect(role.AssumeRolePolicyDocument.Statement).toEqual([
+        {
+          Action: 'sts:AssumeRole',
+          Effect: 'Allow',
+          Principal: { Service: 'lambda.amazonaws.com' },
+        },
+      ]);
+      expect(role).not.toHaveProperty('ManagedPolicyArns');
+    });
+
+    it('grants exactly the scoped permissions', () => {
+      expect(statements()).toEqual([
+        {
+          Effect: 'Allow',
+          Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+          Resource: arnOf(logGroupLogicalId),
+        },
+        {
+          Effect: 'Allow',
+          Action: 's3:DeleteObject',
+          Resource: [
+            { 'Fn::Join': ['', [arnOf(bucketLogicalId), '/receipts/*']] },
+            {
+              'Fn::Join': ['', [arnOf(bucketLogicalId), '/uploads/pending/*']],
+            },
+          ],
+        },
+        {
+          Effect: 'Allow',
+          Action: [
+            'sqs:SendMessage',
+            'sqs:GetQueueAttributes',
+            'sqs:GetQueueUrl',
+          ],
+          Resource: arnOf(failureQueueLogicalId),
+        },
+        {
+          Effect: 'Allow',
+          Action: 'dynamodb:ListStreams',
+          Resource: streamArn(),
+        },
+        {
+          Effect: 'Allow',
+          Action: [
+            'dynamodb:DescribeStream',
+            'dynamodb:GetRecords',
+            'dynamodb:GetShardIterator',
+          ],
+          Resource: streamArn(),
+        },
+      ]);
+    });
+
+    it('grants no table item, index, bucket-wide or wildcard access', () => {
+      const json = JSON.stringify(statements());
+      expect(json).not.toMatch(
+        /dynamodb:(GetItem|PutItem|UpdateItem|DeleteItem|Query|Scan|BatchWriteItem)/,
       );
-      expect(sources).toHaveLength(2);
-      expect(sources).toContainEqual(streamArn());
+      expect(json).not.toContain('/index/');
+      expect(json).not.toContain('"*"');
+      expect(json).not.toMatch(/s3:(Get|Put|List)/);
+      expect(json).not.toContain('events:');
+      expect(json).not.toContain(JSON.stringify(arnOf(tableId)));
+      for (const statement of statements()) {
+        expect(statement).not.toHaveProperty('NotAction');
+        expect(statement).not.toHaveProperty('NotResource');
+        expect(statement.Action).not.toContain('*');
+      }
+    });
+
+    it('defines an encrypted failure queue that enforces TLS', () => {
+      expect(CLAIMFLOW_JANITOR_FAILURE_QUEUE_NAME).toBe(
+        'claimflow-receipt-janitor-failures',
+      );
+      expect(resources()[failureQueueLogicalId].Properties).toEqual({
+        QueueName: 'claimflow-receipt-janitor-failures',
+        SqsManagedSseEnabled: true,
+        MessageRetentionPeriod: 14 * 24 * 60 * 60,
+      });
+      const [policy] = Object.values(
+        template.findResources(QUEUE_POLICY_TYPE, {
+          Properties: { Queues: [{ Ref: failureQueueLogicalId }] },
+        }),
+      ) as TableResource[];
+      expect(policy.Properties.PolicyDocument.Statement).toEqual([
+        {
+          Effect: 'Deny',
+          Principal: { AWS: '*' },
+          Action: 'sqs:*',
+          Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+          Resource: arnOf(failureQueueLogicalId),
+        },
+      ]);
+    });
+
+    it('maps the table stream with the approved settings', () => {
+      expect(mapping().Properties).toEqual({
+        EventSourceArn: streamArn(),
+        FunctionName: { Ref: functionLogicalId },
+        StartingPosition: 'LATEST',
+        BatchSize: 10,
+        FunctionResponseTypes: ['ReportBatchItemFailures'],
+        BisectBatchOnFunctionError: true,
+        MaximumRetryAttempts: 5,
+        MaximumRecordAgeInSeconds: 24 * 60 * 60,
+        DestinationConfig: {
+          OnFailure: { Destination: arnOf(failureQueueLogicalId) },
+        },
+        FilterCriteria: { Filters: [{ Pattern: expect.any(String) }] },
+      });
+    });
+
+    it('filters for TTL removals of pending receipts by the DynamoDB service', () => {
+      const [filter] = mapping().Properties.FilterCriteria.Filters;
+      expect(JSON.parse(filter.Pattern)).toEqual({
+        eventName: ['REMOVE'],
+        userIdentity: {
+          type: ['Service'],
+          principalId: ['dynamodb.amazonaws.com'],
+        },
+        dynamodb: {
+          OldImage: {
+            entityType: { S: ['Receipt'] },
+            state: { S: ['PENDING'] },
+          },
+        },
+      });
+    });
+
+    it('gives the table stream exactly the publisher and janitor consumers', () => {
+      const consumers = Object.values(
+        template.findResources(MAPPING_TYPE, {
+          Properties: { EventSourceArn: streamArn() },
+        }),
+      ).map((found) => (found as TableResource).Properties.FunctionName);
+      expect(consumers).toHaveLength(2);
+      expect(consumers).toContainEqual({ Ref: publisherLogicalId });
+      expect(consumers).toContainEqual({ Ref: functionLogicalId });
     });
   });
 
