@@ -11,15 +11,16 @@ The application defines a single stack, `ClaimFlow` (class `ClaimFlowStack` in `
 
 The stack defines these resources:
 
-| Resource                                                           | Status                                   |
-| ------------------------------------------------------------------ | ---------------------------------------- |
-| DynamoDB table `ClaimFlow`                                         | Defined and deployed in `ap-southeast-1` |
-| Cognito User Pool `ClaimFlow`                                      | Defined and deployed in `ap-southeast-1` |
-| S3 receipt bucket                                                  | Defined and deployed in `ap-southeast-1` |
-| Web hosting: S3 web assets bucket and CloudFront distribution      | Defined and deployed in `ap-southeast-1` |
-| Cognito web app client `ClaimFlowWeb` and classic hosted UI domain | Defined and deployed in `ap-southeast-1` |
-| EventBridge bus `claimflow`, cleanup queue and dead-letter queue   | Defined and deployed in `ap-southeast-1` |
-| Cleanup worker Lambda, its role, log group and queue mapping       | Defined and deployed in `ap-southeast-1` |
+| Resource                                                            | Status                                   |
+| ------------------------------------------------------------------- | ---------------------------------------- |
+| DynamoDB table `ClaimFlow`                                          | Defined and deployed in `ap-southeast-1` |
+| Cognito User Pool `ClaimFlow`                                       | Defined and deployed in `ap-southeast-1` |
+| S3 receipt bucket                                                   | Defined and deployed in `ap-southeast-1` |
+| Web hosting: S3 web assets bucket and CloudFront distribution       | Defined and deployed in `ap-southeast-1` |
+| Cognito web app client `ClaimFlowWeb` and classic hosted UI domain  | Defined and deployed in `ap-southeast-1` |
+| EventBridge bus `claimflow`, cleanup queue and dead-letter queue    | Defined and deployed in `ap-southeast-1` |
+| Cleanup worker Lambda, its role, log group and queue mapping        | Defined and deployed in `ap-southeast-1` |
+| Outbox publisher Lambda, role, log group, failure queue and mapping | Defined and deployed in `ap-southeast-1` |
 
 ### DynamoDB table `ClaimFlow`
 
@@ -160,7 +161,7 @@ The OAC read grant is added to the web assets bucket's `AWS::S3::BucketPolicy`, 
 
 ### Cleanup event delivery
 
-The stack defines the internal cleanup-event path (section 15 of the architecture document). These resources are defined and deployed in `ap-southeast-1`, and the cleanup worker below consumes from the cleanup queue. Nothing currently publishes application events to the bus, so the cleanup path is deployed but will remain idle until the publisher exists.
+The stack defines the internal cleanup-event path (section 15 of the architecture document). These resources are defined and deployed in `ap-southeast-1`, and the cleanup worker below consumes from the cleanup queue. Nothing currently produces outbox events, so the cleanup path stays idle until the AWS application runtime exists.
 
 - A custom EventBridge bus named `claimflow` (`eventBus` on the stack).
 - A standard SQS queue `claimflow-cleanup` (`cleanupQueue`): SQS-managed encryption, TLS enforced, 4-day retention, a 6-minute visibility timeout, and redrive to the dead-letter queue after 5 receives.
@@ -179,6 +180,16 @@ The stack defines the cleanup worker (section 12 of the architecture document). 
 - The function's own execution role allows only: log writes to that log group; SQS consumption of `claimflow-cleanup`; `dynamodb:Query` and `dynamodb:BatchWriteItem` on the table ARN, without its indexes; and `s3:DeleteObject` on `receipts/*` in the receipt bucket, without pending uploads or the bucket itself.
 - An event-source mapping from `claimflow-cleanup`: batch size 10, no batching window, partial batch failure reporting. The queue's six-minute visibility timeout and redrive after five receives are unchanged, and the dead-letter queue is not an event source.
 
+### Outbox publisher
+
+The stack defines the outbox publisher (section 15 of the architecture document). It is defined and deployed in `ap-southeast-1`; the sweeper and the receipt janitor are not connected yet. The AWS application runtime does not exist yet, so nothing produces outbox events and the publisher stays idle.
+
+- Function `claimflow-outbox-publisher` (`outboxPublisher` on the stack): Node.js 24, ARM64, 256 MB, 60-second timeout, tracing disabled, bundled like the cleanup worker. The entry point is `services/api/src/adapters/aws/outbox-publisher-lambda.ts`; its environment holds `CLAIMFLOW_TABLE_NAME` and `CLAIMFLOW_EVENT_BUS_NAME`.
+- Log group `/aws/lambda/claimflow-outbox-publisher` (`outboxPublisherLogGroup`) with 30-day retention.
+- The function's own execution role allows only: log writes to that log group; `dynamodb:GetItem` and `dynamodb:UpdateItem` on the table ARN, without its indexes; `events:PutEvents` on the `claimflow` bus; reading the table stream (`DescribeStream`, `GetRecords`, `GetShardIterator`, `ListStreams` on the stream ARN); and sending to the failure queue.
+- Failure queue `claimflow-outbox-publisher-failures` (`outboxFailureQueue`): standard, SQS-managed encryption, TLS enforced, 14-day retention.
+- A DynamoDB stream event-source mapping: starting at `LATEST`, batch size 10, partial batch failure reporting, batch bisection, 5 retry attempts, maximum record age 24 hours, the failure queue as the failure destination, and a filter for `INSERT` records whose `SK` begins with `OUTBOX#`.
+
 ### Outputs
 
 | Output                      | Value                                                                  |
@@ -191,7 +202,7 @@ The stack defines the cleanup worker (section 12 of the architecture document). 
 | `EventBusName`              | The name of the `claimflow` event bus                                  |
 | `CleanupQueueUrl`           | The URL of the cleanup queue                                           |
 
-Apart from the CloudFront read grant on the web assets bucket and the cleanup worker role, the stack grants no IAM permissions and contains no other Lambda functions, API Gateway resources, or other resources yet. The queue policies above are generated resource policies, not IAM roles.
+Apart from the CloudFront read grant on the web assets bucket and the cleanup worker and outbox publisher roles, the stack grants no IAM permissions and contains no other Lambda functions, API Gateway resources, or other resources yet. The queue policies above are generated resource policies, not IAM roles.
 
 ## Useful commands
 

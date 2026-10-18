@@ -61,6 +61,11 @@ export const CLAIMFLOW_CLEANUP_WORKER_TABLE_ENV = 'CLAIMFLOW_TABLE_NAME';
 export const CLAIMFLOW_CLEANUP_WORKER_BUCKET_ENV =
   'CLAIMFLOW_RECEIPT_BUCKET_NAME';
 
+export const CLAIMFLOW_OUTBOX_PUBLISHER_NAME = 'claimflow-outbox-publisher';
+export const CLAIMFLOW_OUTBOX_FAILURE_QUEUE_NAME =
+  'claimflow-outbox-publisher-failures';
+export const CLAIMFLOW_PUBLISHER_EVENT_BUS_ENV = 'CLAIMFLOW_EVENT_BUS_NAME';
+
 const repositoryRoot = resolve(__dirname, '../..');
 
 const stringKey = (name: string): dynamodb.Attribute => ({
@@ -108,6 +113,15 @@ export class ClaimFlowStack extends cdk.Stack {
 
   /** The cleanup worker's own log group. */
   public readonly cleanupWorkerLogGroup: logs.LogGroup;
+
+  /** Publishes new outbox items from the table stream to the event bus. */
+  public readonly outboxPublisher: nodejs.NodejsFunction;
+
+  /** The outbox publisher's own log group. */
+  public readonly outboxPublisherLogGroup: logs.LogGroup;
+
+  /** Receives stream batches the outbox publisher could not process. */
+  public readonly outboxFailureQueue: sqs.Queue;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, { description: CLAIMFLOW_STACK_DESCRIPTION, ...props });
@@ -392,6 +406,90 @@ export class ClaimFlowStack extends cdk.Stack {
       new lambdaEventSources.SqsEventSource(this.cleanupQueue, {
         batchSize: 10,
         reportBatchItemFailures: true,
+      }),
+    );
+
+    // The outbox publisher, built like the cleanup worker. The failure queue
+    // receives the metadata of stream batches that exhausted their retries.
+    this.outboxFailureQueue = new sqs.Queue(this, 'OutboxFailureQueue', {
+      queueName: CLAIMFLOW_OUTBOX_FAILURE_QUEUE_NAME,
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      retentionPeriod: cdk.Duration.days(14),
+    });
+    this.outboxPublisherLogGroup = new logs.LogGroup(
+      this,
+      'OutboxPublisherLogGroup',
+      {
+        logGroupName: `/aws/lambda/${CLAIMFLOW_OUTBOX_PUBLISHER_NAME}`,
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      },
+    );
+    const outboxPublisherRole = new iam.Role(this, 'OutboxPublisherRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+    });
+    this.outboxPublisherLogGroup.grantWrite(outboxPublisherRole);
+    outboxPublisherRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
+        resources: [this.table.tableArn],
+      }),
+    );
+    outboxPublisherRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['events:PutEvents'],
+        resources: [this.eventBus.eventBusArn],
+      }),
+    );
+    this.outboxPublisher = new nodejs.NodejsFunction(this, 'OutboxPublisher', {
+      functionName: CLAIMFLOW_OUTBOX_PUBLISHER_NAME,
+      entry: resolve(
+        repositoryRoot,
+        'services/api/src/adapters/aws/outbox-publisher-lambda.ts',
+      ),
+      projectRoot: repositoryRoot,
+      depsLockFilePath: resolve(repositoryRoot, 'package-lock.json'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_24_X,
+      architecture: lambda.Architecture.ARM_64,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(60),
+      role: outboxPublisherRole,
+      logGroup: this.outboxPublisherLogGroup,
+      environment: {
+        [CLAIMFLOW_CLEANUP_WORKER_TABLE_ENV]: this.table.tableName,
+        [CLAIMFLOW_PUBLISHER_EVENT_BUS_ENV]: this.eventBus.eventBusName,
+      },
+      bundling: {
+        externalModules: [],
+        esbuildArgs: { '--conditions': 'source' },
+        forceDockerBundling: false,
+      },
+    });
+    this.outboxPublisher.addEventSource(
+      new lambdaEventSources.DynamoEventSource(this.table, {
+        startingPosition: lambda.StartingPosition.LATEST,
+        batchSize: 10,
+        reportBatchItemFailures: true,
+        bisectBatchOnError: true,
+        retryAttempts: 5,
+        maxRecordAge: cdk.Duration.hours(24),
+        onFailure: new lambdaEventSources.SqsDlq(this.outboxFailureQueue),
+        filters: [
+          lambda.FilterCriteria.filter({
+            eventName: lambda.FilterRule.isEqual('INSERT') as string[],
+            dynamodb: {
+              Keys: {
+                SK: {
+                  S: lambda.FilterRule.beginsWith('OUTBOX#') as {
+                    prefix: string;
+                  }[],
+                },
+              },
+            },
+          }),
+        ],
       }),
     );
   }

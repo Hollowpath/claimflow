@@ -333,6 +333,14 @@ With stubbed environment variables and a fresh module import:
 - the module exporting only `handler`, which answers an empty batch without calling AWS;
 - loading failing with a fixed message when the table name or the receipt bucket name is missing or empty.
 
+## Outbox publisher Lambda entry point (`services/api/test/outbox-publisher-lambda.test.ts`)
+
+With stubbed environment variables and a fresh module import:
+
+- the module exporting only `handler`;
+- an empty batch, and records outside the approved filter, answered without calling AWS;
+- loading failing with a fixed message when the table name or the event bus name is missing or empty.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
