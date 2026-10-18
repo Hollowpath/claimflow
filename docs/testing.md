@@ -55,6 +55,16 @@ The transport-neutral request pipeline, called directly with normalized requests
 - one structured log entry per request;
 - the local handler's development sign-in cookie, including tampered cookies.
 
+## API Gateway transport (`services/api/test/lambda-adapter.test.ts`)
+
+The HTTP API payload format 2.0 adapter, with hand-built events and no AWS access:
+
+- method, raw path, query parameters, lower-case headers, and the cookie header rebuilt from `cookies`;
+- UTF-8 and base64 request bodies, the body size limit, and empty bodies;
+- only the authorizer's validated `sub` claim becomes the verified subject; other claims are ignored, and missing or malformed claims leave it unset;
+- text, base64 binary, and empty responses with their status and headers;
+- through the shared handler: unauthenticated `401`, authenticated requests, a JSON claim create, a base64 receipt upload returned as a binary download, validation and size errors, a generic `500`, and no roles taken from token claims.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

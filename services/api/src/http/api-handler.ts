@@ -31,6 +31,12 @@ export interface ApiRequest {
   /** One value per header, keyed by lower-case name. */
   readonly headers: Readonly<Record<string, string>>;
   /**
+   * The Cognito `sub` claim of a token that API Gateway's JWT authorizer has
+   * already validated. Only that transport sets it; local requests leave it
+   * unset. It identifies the user but carries no roles or permissions.
+   */
+  readonly verifiedSubject?: string;
+  /**
    * Reads the whole body, or returns `undefined` as soon as the body is known
    * to exceed `limitBytes`. Called at most once, and only when a route needs
    * the body.

@@ -16,5 +16,8 @@
     "@claimflow/contracts": "0.2.0",
     "@claimflow/domain": "0.2.0",
     "zod": "^4.6.6"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.164"
   }
 }
