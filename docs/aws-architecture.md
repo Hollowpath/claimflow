@@ -677,6 +677,8 @@ The policy is valid for 15 minutes and contains these conditions:
 
 Independently of the upload conditions, the server verifies size, content type, SHA-256 checksum, and the real file type before attachment (step 4). An object is attached only after that verification passes.
 
+`S3UploadFormGenerator` in `services/api/src/adapters/aws/s3-upload-form.ts` produces this form for a `PENDING` receipt record. It validates the record with the receipt codec before signing, builds exactly the conditions above for the configured bucket and the key `uploads/pending/<receiptId>`, converts the declared checksum from lower-case hexadecimal to base64, and asks an injected signer once for a form valid for 15 minutes. It rejects a non-`PENDING` record, a missing bucket name, and signer output that is not an HTTPS URL with string fields that keep the requested key, type, and checksum and carry a policy and signature. Errors never contain file names or checksums. The real signer, `createS3UploadFormSigner`, signs locally with the S3 client's credentials and sends no request; nothing is uploaded or inspected here.
+
 ### Upload
 
 1. `POST /receipts` with `{ fileName, contentType, sizeBytes, checksumSha256 }` and an idempotency key.

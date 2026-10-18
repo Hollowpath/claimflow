@@ -207,6 +207,13 @@ Against a fake client that applies the approved condition to an existing item:
 - the SDK output returned as is;
 - cancellations, token mismatches, throttling, timeouts, and internal errors propagated by identity, each after exactly one command and with no retry.
 
+## S3 upload form (`services/api/test/s3-upload-form.test.ts`)
+
+- the exact bucket, key, fields, conditions, and 15-minute expiry passed to an injected signer, called once, and the hexadecimal-to-base64 checksum conversion;
+- every content type and the 1-byte and 10 MB size boundaries, and records the receipt codec refuses rejected before signing;
+- non-`PENDING` records, missing bucket names, and invalid signer output rejected, and no file names or checksums in keys or errors;
+- the real signer run locally with static credentials: the decoded policy has the required conditions and a lifetime of at most 15 minutes, and no network request is made.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
