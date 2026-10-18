@@ -22,7 +22,7 @@ services/api        Application services, port interfaces, adapters, HTTP server
 docs/               Domain model, API guide, OpenAPI specification, development, testing
 ```
 
-The API is a TypeScript HTTP server built on `node:http`. Application services depend on port interfaces (`ClaimRepository`, `CategoryRepository`, `UserDirectory`, `ReceiptStorage`, `IdempotencyStore`, `Clock`, `IdGenerator`, `Logger`). The current implementation provides local adapters for them: JSON-file persistence, receipt files on disk, and a fixed directory of sample users.
+The API is a transport-neutral TypeScript request handler, which runs locally behind an HTTP server built on `node:http`. Application services depend on port interfaces (`ClaimRepository`, `CategoryRepository`, `UserDirectory`, `ReceiptStorage`, `IdempotencyStore`, `Clock`, `IdGenerator`, `Logger`). The current implementation provides local adapters for them: JSON-file persistence, receipt files on disk, and a fixed directory of sample users.
 
 ## Local development
 

@@ -3,6 +3,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 import type { Application } from '../src/composition.js';
+import { createLocalApiHandler } from '../src/http/local-api.js';
 import { createHttpServer } from '../src/http/server.js';
 import { SessionCookies } from '../src/http/session-cookie.js';
 
@@ -24,9 +25,9 @@ export interface RequestOptions {
 export async function startServer(
   app: Application,
 ): Promise<{ baseUrl: string; close: () => Promise<void> }> {
-  const server: Server = createHttpServer(app, {
-    cookies: new SessionCookies('test-secret'),
-  });
+  const server: Server = createHttpServer(
+    createLocalApiHandler(app, new SessionCookies('test-secret')),
+  );
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
   return {

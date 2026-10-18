@@ -361,6 +361,12 @@ describe('error contract', () => {
     });
     expect(response.headers.get('x-correlation-id')).toBe('trace-123');
   });
+
+  it('answers a malformed percent-encoded path segment with 404', async () => {
+    const response = await aisha.get('/claims/%E0%A4%A');
+    expect(response.status).toBe(404);
+    expect(response.body.error.code).toBe('NOT_FOUND');
+  });
 });
 
 describe('optimistic concurrency', () => {

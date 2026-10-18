@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { isMissingFile } from './adapters/local/json-database.js';
 import { createLocalApplication, localDataPaths } from './composition.js';
+import { createLocalApiHandler } from './http/local-api.js';
 import { createHttpServer } from './http/server.js';
 import { SessionCookies } from './http/session-cookie.js';
 import { localConfig } from './local-config.js';
@@ -20,10 +21,10 @@ const app = await createLocalApplication({ dataDirectory });
 const purged = await app.receipts.purgeAbandonedUploads(abandonedUploadAgeMs);
 const cookies = new SessionCookies(await loadSessionSecret());
 
-const server = createHttpServer(app, {
-  cookies,
-  ...(serveWeb ? { webRoot } : {}),
-});
+const server = createHttpServer(
+  createLocalApiHandler(app, cookies),
+  serveWeb ? { webRoot } : {},
+);
 
 server.listen(port, host, () => {
   app.logger.info('server.started', {

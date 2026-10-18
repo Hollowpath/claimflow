@@ -935,6 +935,8 @@ The local JSON database already applies each write atomically, so the local adap
 
 **Unchanged:** `packages/domain`; route definitions other than the receipt routes; error mapping; the logger.
 
+**Done:** the request pipeline is a transport-neutral API handler (`services/api/src/http/api-handler.ts`) with normalized requests and responses. It owns routing, body parsing and size limits, idempotency, error conversion, request and correlation IDs, response headers, and request logging, and receives authentication through an injected resolver. The `node:http` server is a thin adapter around it that also serves the built web app locally; the local runtime injects the development session-cookie resolver. The Lambda entry point will reuse the same handler with a Cognito identity resolver.
+
 **Changed in later phases:**
 
 - services build outbox events and commit options;
@@ -942,7 +944,6 @@ The local JSON database already applies each write atomically, so the local adap
 - port signatures as listed above, with the local adapters updated to match;
 - `presenters.loadNames` uses `UserDirectory.getMany` instead of listing every user;
 - receipt routes and contracts move to presigned POST upload forms and presigned download URLs in both runtimes;
-- the request pipeline in `server.ts` is extracted into a shared handler used by the `node:http` server and the Lambda entry point;
 - the web app adds Cognito User Pool sign-in for the AWS runtime and uses the presigned receipt flow.
 
 **New, AWS only:**

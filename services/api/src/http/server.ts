@@ -1,4 +1,3 @@
-import { createHash, randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import {
   createServer,
@@ -8,70 +7,34 @@ import {
 } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
 
-import {
-  apiBasePath,
-  headers,
-  idempotencyKeySchema,
-  maxReceiptSizeBytes,
-} from '@claimflow/contracts';
+import { apiBasePath } from '@claimflow/contracts';
 
-import {
-  NotFoundError,
-  PayloadTooLargeError,
-  UnauthenticatedError,
-  ValidationError,
-} from '../application/errors.js';
-import type { StoredResponse } from '../application/ports.js';
-import type { Application } from '../composition.js';
-import { toErrorReply } from './http-errors.js';
-import {
-  createRoutes,
-  type Reply,
-  type Route,
-  type RouteContext,
-} from './routes.js';
-import type { SessionCookies } from './session-cookie.js';
-
-const maxJsonBytes = 64 * 1024;
-const correlationIdPattern = /^[A-Za-z0-9_.:-]{1,128}$/;
+import type { ApiHandler, ApiRequest, ApiResponse } from './api-handler.js';
 
 export interface ServerOptions {
-  readonly cookies: SessionCookies;
   /** Directory of the built web app to serve, if any. */
   readonly webRoot?: string;
 }
 
-interface CompiledRoute {
-  readonly route: Route;
-  readonly pattern: RegExp;
-  readonly paramNames: readonly string[];
-}
-
+/**
+ * The `node:http` transport: API requests go to the shared handler, and
+ * other paths serve the built web app when `webRoot` is set.
+ */
 export function createHttpServer(
-  app: Application,
-  options: ServerOptions,
+  handler: ApiHandler,
+  options: ServerOptions = {},
 ): Server {
-  const routes = createRoutes(app, options.cookies).map(compile);
   return createServer((request, response) => {
-    void handle(app, routes, options, request, response);
+    void handle(handler, options, request, response);
   });
 }
 
 async function handle(
-  app: Application,
-  routes: readonly CompiledRoute[],
+  handler: ApiHandler,
   options: ServerOptions,
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
-  const started = performance.now();
-  const requestId = randomUUID();
-  const incomingCorrelation = request.headers['x-correlation-id'];
-  const correlationId =
-    typeof incomingCorrelation === 'string' &&
-    correlationIdPattern.test(incomingCorrelation)
-      ? incomingCorrelation
-      : requestId;
   const url = new URL(request.url ?? '/', 'http://localhost');
   const method = request.method ?? 'GET';
 
@@ -80,165 +43,38 @@ async function handle(
     return;
   }
 
-  const path = url.pathname.slice(apiBasePath.length);
-  const match = findRoute(routes, method, path);
-  let actorId: string | undefined;
-  let reply: Reply;
-  let replayed = false;
-  let failure: unknown;
-
-  try {
-    if (match === undefined) {
-      throw new NotFoundError('No such endpoint.');
-    }
-    const { route, params } = match;
-    const userId = options.cookies.read(request.headers.cookie);
-    const actor =
-      userId === undefined ? undefined : await app.sessions.actorFor(userId);
-    actorId = actor?.userId;
-    if (route.auth && actor === undefined) {
-      throw new UnauthenticatedError();
-    }
-
-    const raw =
-      route.body === 'none' ? new Uint8Array() : await readBody(request, route);
-    const context: RouteContext = {
-      actor,
-      params,
-      query: Object.fromEntries(url.searchParams),
-      body: route.body === 'json' ? parseJson(raw, request) : undefined,
-      raw,
-      header: (name) => headerValue(request, name),
-    };
-
-    if (route.idempotent && actor !== undefined) {
-      const key = idempotencyKeySchema.safeParse(
-        headerValue(request, headers.idempotencyKey),
-      );
-      if (!key.success) {
-        throw new ValidationError(
-          'A valid Idempotency-Key header is required.',
-          [
-            {
-              field: headers.idempotencyKey,
-              code: 'INVALID',
-              message: key.error.issues[0]?.message ?? 'Required.',
-            },
-          ],
-        );
-      }
-      const fingerprint = createHash('sha256')
-        .update(
-          `${method} ${path}\n${headerValue(request, headers.fileName) ?? ''}\n`,
-        )
-        .update(raw)
-        .digest('hex');
-      const result = await app.idempotency.run(
-        actor.userId,
-        key.data,
-        fingerprint,
-        async (): Promise<StoredResponse> => {
-          try {
-            const { status, body } = await route.handle(context);
-            return { status, body };
-          } catch (error) {
-            const errorReply = toErrorReply(error, requestId);
-            if (errorReply.status >= 500) {
-              throw error;
-            }
-            return errorReply;
-          }
-        },
-      );
-      replayed = result.replayed;
-      reply = result.response;
-    } else {
-      reply = await route.handle(context);
-    }
-  } catch (error) {
-    failure = error;
-    reply = toErrorReply(error, requestId);
-  }
-
-  send(response, reply, {
-    [headers.requestId]: requestId,
-    [headers.correlationId]: correlationId,
-    ...(replayed ? { 'Idempotent-Replayed': 'true' } : {}),
-  });
-
-  const fields = {
-    requestId,
-    correlationId,
-    method,
-    route: match?.route.path ?? 'unmatched',
-    operation: match?.route.operation ?? 'unmatched',
-    actorId,
-    claimId: match?.params.claimId,
-    status: reply.status,
-    outcome:
-      reply.status >= 500 ? 'error' : reply.status >= 400 ? 'rejected' : 'ok',
-    replayed,
-    durationMs: Math.round(performance.now() - started),
-  };
-  if (reply.status >= 500) {
-    app.logger.error('http.request', {
-      ...fields,
-      error: failure instanceof Error ? failure.stack : String(failure),
-    });
-  } else {
-    app.logger.info('http.request', fields);
-  }
+  send(response, await handler(toApiRequest(request, url, method)));
 }
 
-function compile(route: Route): CompiledRoute {
-  const paramNames: string[] = [];
-  const source = route.path.replace(/:(\w+)/g, (_match, name: string) => {
-    paramNames.push(name);
-    return '([^/]+)';
-  });
-  return { route, pattern: new RegExp(`^${source}$`), paramNames };
-}
-
-function findRoute(
-  routes: readonly CompiledRoute[],
-  method: string,
-  path: string,
-): { route: Route; params: Record<string, string> } | undefined {
-  for (const { route, pattern, paramNames } of routes) {
-    const found = route.method === method ? pattern.exec(path) : null;
-    if (found !== null) {
-      const params: Record<string, string> = {};
-      paramNames.forEach((name, index) => {
-        params[name] = decodeURIComponent(found[index + 1] ?? '');
-      });
-      return { route, params };
-    }
-  }
-  return undefined;
-}
-
-function headerValue(
+function toApiRequest(
   request: IncomingMessage,
-  name: string,
-): string | undefined {
-  const value = request.headers[name.toLowerCase()];
-  return Array.isArray(value) ? value[0] : value;
+  url: URL,
+  method: string,
+): ApiRequest {
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(request.headers)) {
+    const first = Array.isArray(value) ? value[0] : value;
+    if (first !== undefined) {
+      headers[name] = first;
+    }
+  }
+  return {
+    method,
+    path: url.pathname,
+    query: Object.fromEntries(url.searchParams),
+    headers,
+    readBody: (limitBytes) => readBody(request, limitBytes),
+  };
 }
 
 async function readBody(
   request: IncomingMessage,
-  route: Route,
-): Promise<Uint8Array> {
-  const limit = route.body === 'raw' ? maxReceiptSizeBytes : maxJsonBytes;
-  const tooLarge = new PayloadTooLargeError(
-    route.body === 'raw'
-      ? 'Receipts must be 10 MB or smaller.'
-      : 'The request body is too large.',
-  );
+  limitBytes: number,
+): Promise<Uint8Array | undefined> {
   const declared = Number(request.headers['content-length'] ?? 0);
-  if (declared > limit) {
+  if (declared > limitBytes) {
     request.resume();
-    throw tooLarge;
+    return undefined;
   }
 
   const chunks: Buffer[] = [];
@@ -246,54 +82,21 @@ async function readBody(
   for await (const chunk of request) {
     const buffer = chunk as Buffer;
     total += buffer.byteLength;
-    if (total > limit) {
+    if (total > limitBytes) {
       request.resume();
-      throw tooLarge;
+      return undefined;
     }
     chunks.push(buffer);
   }
   return new Uint8Array(Buffer.concat(chunks));
 }
 
-function parseJson(raw: Uint8Array, request: IncomingMessage): unknown {
-  if (raw.byteLength === 0) {
-    return undefined;
-  }
-  const contentType = headerValue(request, 'content-type') ?? '';
-  if (!contentType.toLowerCase().startsWith('application/json')) {
-    throw new ValidationError('Send the request body as application/json.');
-  }
-  try {
-    return JSON.parse(Buffer.from(raw).toString('utf8'));
-  } catch {
-    throw new ValidationError('The request body is not valid JSON.');
-  }
-}
-
-function send(
-  response: ServerResponse,
-  reply: Reply,
-  extraHeaders: Record<string, string>,
-): void {
-  response.statusCode = reply.status;
-  const allHeaders = {
-    'Cache-Control': 'no-store',
-    'X-Content-Type-Options': 'nosniff',
-    ...extraHeaders,
-    ...reply.headers,
-  };
-  for (const [name, value] of Object.entries(allHeaders)) {
+function send(response: ServerResponse, apiResponse: ApiResponse): void {
+  response.statusCode = apiResponse.status;
+  for (const [name, value] of Object.entries(apiResponse.headers)) {
     response.setHeader(name, value);
   }
-  if (reply.file !== undefined) {
-    response.setHeader('Content-Length', reply.file.byteLength);
-    response.end(reply.file);
-  } else if (reply.body === undefined) {
-    response.end();
-  } else {
-    response.setHeader('Content-Type', 'application/json; charset=utf-8');
-    response.end(JSON.stringify(reply.body));
-  }
+  response.end(apiResponse.body);
 }
 
 const staticTypes: Readonly<Record<string, string>> = {

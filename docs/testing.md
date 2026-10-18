@@ -43,6 +43,18 @@ The services wired to the real local adapters in a temporary directory:
 - idempotency: replay, per-actor scope, key reuse, in-progress requests, release after failures;
 - receipt measurement, content sniffing, attach/replace/read/remove, missing, foreign, mismatched, reused, and tampered uploads, and cleanup of abandoned uploads.
 
+## Shared API handler (`services/api/test/api-handler.test.ts`)
+
+The transport-neutral request pipeline, called directly with normalized requests and test routes:
+
+- routing below the API base path, decoded parameters, and `404` for unknown, outside, and malformed paths without authenticating;
+- the injected authentication resolver, `401` before any body is read, and a generic `500` when the resolver fails;
+- body size limits per route type (`413`), JSON parsing and content types, and routes that never read a body;
+- required idempotency keys, replay with `Idempotent-Replayed`, key reuse, and replayed rejections;
+- standard response headers, request and correlation IDs, binary file responses, and hidden internal errors;
+- one structured log entry per request;
+- the local handler's development sign-in cookie, including tampered cookies.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
@@ -51,7 +63,7 @@ The real server on an ephemeral port with per-user cookie sessions:
 - the complete draft-to-paid workflow and its history; rejection, reopening, and resubmission;
 - visibility (`404` for claims a user may not see), role and assignment checks, self-review;
 - role-restricted lists and the status filter;
-- the JSON error contract, malformed bodies and content types, missing idempotency keys, and a generic `500` that leaks no internals;
+- the JSON error contract, malformed bodies, content types, and path segments, missing idempotency keys, and a generic `500` that leaks no internals;
 - stale versions, idempotent retries of creates and actions, and key reuse;
 - history pagination, category management and validation, and policy re-evaluation on submit;
 - receipt upload, view, replace, remove, `413` for oversized files, and type and metadata mismatches;
