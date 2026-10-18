@@ -201,6 +201,12 @@ Against a fake client that applies the approved condition to an existing item:
 - uploads, attachments, replacements, removals, and draft deletions composed with claim and category operations without duplicate targets;
 - no file names in keys, conditions, or errors, and no DynamoDB or S3 command sent.
 
+## DynamoDB transaction executor (`services/api/test/dynamodb-transaction-executor.test.ts`)
+
+- the exact composed input sent once in a single `TransactWriteCommand`, with its token and operation order preserved and the input left unmodified;
+- the SDK output returned as is;
+- cancellations, token mismatches, throttling, timeouts, and internal errors propagated by identity, each after exactly one command and with no retry.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
