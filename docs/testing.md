@@ -214,6 +214,14 @@ Against a fake client that applies the approved condition to an existing item:
 - non-`PENDING` records, missing bucket names, and invalid signer output rejected, and no file names or checksums in keys or errors;
 - the real signer run locally with static credentials: the decoded policy has the required conditions and a lifetime of at most 15 minutes, and no network request is made.
 
+## S3 receipt inspector (`services/api/test/s3-receipt-inspector.test.ts`)
+
+- the exact `HeadObject` (checksum mode) and ranged `GetObject` (`bytes=0-15`) commands, in that order, and the exact measured result;
+- PDF, JPEG, and PNG signatures, and unknown, truncated, and mismatched signatures rejected;
+- missing or mismatched size, type, and checksum rejected without reading the body, and absent, unusable, or over-long ranged responses rejected;
+- missing objects recognized by error name or status and not by message, and unrelated SDK failures propagated unchanged;
+- validation before any command, errors that expose no bucket, key, name, or value, and at most two read-only commands.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
