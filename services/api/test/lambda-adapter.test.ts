@@ -2,20 +2,17 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { Application } from '../src/composition.js';
 import {
-  createApiHandler,
   maxJsonBytes,
-  type ApiHandler,
   type ApiRequest,
   type ApiResponse,
 } from '../src/http/api-handler.js';
+import { createAwsApiHandler } from '../src/http/aws-api.js';
 import {
   createHttpApiAdapter,
   toHttpApiResult,
   type HttpApiEvent,
   type HttpApiResult,
 } from '../src/http/lambda-adapter.js';
-import { createRoutes } from '../src/http/routes.js';
-import { SessionCookies } from '../src/http/session-cookie.js';
 import { pdfBytes, temporaryDirectory, testApplication } from './support.js';
 
 interface EventInit {
@@ -237,24 +234,17 @@ describe('response mapping', () => {
   });
 });
 
-describe('with the shared API handler', () => {
+describe('with the AWS API handler', () => {
   let dir: Awaited<ReturnType<typeof temporaryDirectory>>;
   let app: Application;
   let adapter: (event: HttpApiEvent) => Promise<HttpApiResult>;
 
   beforeEach(async () => {
     dir = await temporaryDirectory();
+    // The local seed directory stands in for Cognito profiles: its sample
+    // user IDs play the role of Cognito subjects.
     app = await testApplication(dir.path);
-    const handler: ApiHandler = createApiHandler(app, {
-      routes: createRoutes(app, new SessionCookies('test-secret')),
-      // Stands in for the future Cognito resolver: the sample user IDs play
-      // the role of Cognito subjects, and the profile supplies the roles.
-      authenticate: (request) =>
-        request.verifiedSubject === undefined
-          ? Promise.resolve(undefined)
-          : app.sessions.actorFor(request.verifiedSubject),
-    });
-    adapter = createHttpApiAdapter(handler);
+    adapter = createHttpApiAdapter(createAwsApiHandler(app));
   });
 
   afterEach(async () => {

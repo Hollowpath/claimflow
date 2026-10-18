@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 
 import { describe, expect, it } from 'vitest';
 
-import { createRoutes } from '../src/http/routes.js';
+import { createLocalRoutes } from '../src/http/routes.js';
 import { SessionCookies } from '../src/http/session-cookie.js';
 import { temporaryDirectory, testApplication } from './support.js';
 
@@ -37,7 +37,7 @@ describe('OpenAPI specification', () => {
     const dir = await temporaryDirectory();
     try {
       const app = await testApplication(dir.path);
-      const implemented = createRoutes(app, new SessionCookies('x'))
+      const implemented = createLocalRoutes(app, new SessionCookies('x'))
         .map(
           (route) => `${route.method} ${route.path.replace(/:(\w+)/g, '{$1}')}`,
         )

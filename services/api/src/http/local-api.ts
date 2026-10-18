@@ -5,7 +5,7 @@ import {
   type ApiHandler,
   type AuthenticationResolver,
 } from './api-handler.js';
-import { createRoutes } from './routes.js';
+import { createLocalRoutes } from './routes.js';
 import type { SessionCookies } from './session-cookie.js';
 
 /** The API handler of the local runtime, signed in by development sign-in. */
@@ -14,7 +14,7 @@ export function createLocalApiHandler(
   cookies: SessionCookies,
 ): ApiHandler {
   return createApiHandler(app, {
-    routes: createRoutes(app, cookies),
+    routes: createLocalRoutes(app, cookies),
     authenticate: sessionCookieAuthentication(cookies, app.sessions),
   });
 }

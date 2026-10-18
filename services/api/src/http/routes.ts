@@ -73,44 +73,27 @@ function idParam(context: RouteContext, name: string): string {
   return parsed.data;
 }
 
-export function createRoutes(app: Application, cookies: SessionCookies) {
-  const claimId = (context: RouteContext) => idParam(context, 'claimId');
+const health: Route = {
+  method: 'GET',
+  path: '/health',
+  operation: 'health',
+  auth: false,
+  idempotent: false,
+  body: 'none',
+  handle: () => Promise.resolve(ok({ status: 'ok' })),
+};
 
-  const actionRoutes = (
-    Object.entries(claimActionPaths) as [ClaimAction, string][]
-  ).map(([action, segment]): Route => ({
-    method: 'POST',
-    path: `/claims/:claimId/${segment}`,
-    operation: `claim.${segment}`,
-    auth: true,
-    idempotent: true,
-    body: 'json',
-    handle: async (context) => {
-      const input =
-        action === 'APPROVE' || action === 'REJECT'
-          ? claimDecisionRequestSchema.parse(context.body)
-          : claimActionRequestSchema.parse(context.body);
-      return ok(
-        await app.claims.perform(
-          actorOf(context),
-          claimId(context),
-          action,
-          input,
-        ),
-      );
-    },
-  }));
-
-  const routes: Route[] = [
-    {
-      method: 'GET',
-      path: '/health',
-      operation: 'health',
-      auth: false,
-      idempotent: false,
-      body: 'none',
-      handle: () => Promise.resolve(ok({ status: 'ok' })),
-    },
+/**
+ * The local development runtime's routes. Development sign-in selects and
+ * clears a sample user through `PUT` and `DELETE /session`, and
+ * `GET /session` lists the selectable users.
+ */
+export function createLocalRoutes(
+  app: Application,
+  cookies: SessionCookies,
+): Route[] {
+  return [
+    health,
     {
       method: 'GET',
       path: '/session',
@@ -153,6 +136,62 @@ export function createRoutes(app: Application, cookies: SessionCookies) {
         headers: { 'Set-Cookie': cookies.clear() },
       }),
     },
+    ...applicationRoutes(app),
+  ];
+}
+
+/**
+ * The AWS runtime's routes. Users sign in through Cognito, so there is no
+ * way to select or clear a user, and `GET /session` describes only the
+ * signed-in user, never the other users.
+ */
+export function createAwsRoutes(app: Application): Route[] {
+  return [
+    health,
+    {
+      method: 'GET',
+      path: '/session',
+      operation: 'session.get',
+      auth: false,
+      idempotent: false,
+      body: 'none',
+      handle: async (context) =>
+        ok(await app.sessions.describeSignedIn(context.actor)),
+    },
+    ...applicationRoutes(app),
+  ];
+}
+
+/** Every route other than health and sessions; the same in both runtimes. */
+function applicationRoutes(app: Application): Route[] {
+  const claimId = (context: RouteContext) => idParam(context, 'claimId');
+
+  const actionRoutes = (
+    Object.entries(claimActionPaths) as [ClaimAction, string][]
+  ).map(([action, segment]): Route => ({
+    method: 'POST',
+    path: `/claims/:claimId/${segment}`,
+    operation: `claim.${segment}`,
+    auth: true,
+    idempotent: true,
+    body: 'json',
+    handle: async (context) => {
+      const input =
+        action === 'APPROVE' || action === 'REJECT'
+          ? claimDecisionRequestSchema.parse(context.body)
+          : claimActionRequestSchema.parse(context.body);
+      return ok(
+        await app.claims.perform(
+          actorOf(context),
+          claimId(context),
+          action,
+          input,
+        ),
+      );
+    },
+  }));
+
+  const routes: Route[] = [
     {
       method: 'GET',
       path: '/categories',

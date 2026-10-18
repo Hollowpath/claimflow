@@ -18,8 +18,9 @@ export interface CurrentUserDto extends UserSummaryDto {
   readonly manager?: PersonRef;
 }
 
-/** The development session: who is signed in and who can be chosen. */
+/** Who is signed in and, in the local development runtime, who can be chosen. */
 export interface SessionDto {
   readonly user: CurrentUserDto | null;
+  /** The selectable development users; always empty in the AWS runtime. */
   readonly users: readonly UserSummaryDto[];
 }

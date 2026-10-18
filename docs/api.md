@@ -6,7 +6,9 @@ The ClaimFlow API is served under `/api/v1` by `services/api` (port 3001 in the 
 
 The local development runtime uses development sign-in rather than production authentication. `PUT /session` with `{ "userId": "u-aisha" }` selects a sample user and sets an HMAC-signed, `HttpOnly`, `SameSite=Strict` cookie. There is no password, so anyone who can reach the API can select any sample user; do not expose it beyond a development machine or use it with real data.
 
-On every request the server verifies the cookie and loads the user's roles and manager from its own directory. Request bodies never carry identity: request schemas are strict, so a body containing `employeeId`, `status`, `roles`, or any other unknown field is rejected with `400`.
+The AWS runtime, which is not deployed yet, signs users in with Cognito instead. It has no `PUT /session` or `DELETE /session`. Its `GET /session` describes only the signed-in user and returns an empty `users` list. The user is identified only by the `sub` of the access token that API Gateway validated, and roles and manager come from the user's profile, never from token claims or groups.
+
+On every request the server verifies the cookie (locally) or the validated subject (on AWS) and loads the user's roles and manager from its own directory. Request bodies never carry identity: request schemas are strict, so a body containing `employeeId`, `status`, `roles`, or any other unknown field is rejected with `400`.
 
 ## Conventions
 
@@ -53,9 +55,9 @@ Every error has this shape:
 | Method | Path                             | Who                   | Purpose                                                                                                                |
 | ------ | -------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | GET    | `/health`                        | anyone                | Liveness check.                                                                                                        |
-| GET    | `/session`                       | anyone                | Current user (or `null`) and the selectable local users.                                                               |
-| PUT    | `/session`                       | anyone                | Select a local user. Body: `{ userId }`.                                                                               |
-| DELETE | `/session`                       | anyone                | Sign out.                                                                                                              |
+| GET    | `/session`                       | anyone                | Current user (or `null`) and the selectable local users; on AWS, the current user only, with an empty `users` list.    |
+| PUT    | `/session`                       | anyone                | Select a local user. Body: `{ userId }`. Local runtime only.                                                           |
+| DELETE | `/session`                       | anyone                | Sign out. Local runtime only.                                                                                          |
 | GET    | `/categories`                    | signed in             | All categories, sorted by name.                                                                                        |
 | POST   | `/categories`                    | administrator         | Create a category.                                                                                                     |
 | PATCH  | `/categories/{categoryId}`       | administrator         | Change name, currency, limits, threshold, or `active`.                                                                 |

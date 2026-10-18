@@ -52,13 +52,18 @@ paths:
     get:
       tags: [Session]
       summary: Current user and selectable local users
+      description: >-
+        In the AWS runtime, describes only the Cognito-authenticated user and
+        returns an empty `users` list.
       security: []
       responses:
         '200': { $ref: '#/components/responses/Session' }
     put:
       tags: [Session]
       summary: Select a local user
-      description: Sets the `claimflow_session` cookie.
+      description: >-
+        Sets the `claimflow_session` cookie. Local development runtime only;
+        not available in the AWS runtime.
       security: []
       requestBody:
         required: true
@@ -82,6 +87,7 @@ paths:
     delete:
       tags: [Session]
       summary: Sign out
+      description: Local development runtime only; not available in the AWS runtime.
       security: []
       responses:
         '200': { $ref: '#/components/responses/Session' }

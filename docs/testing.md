@@ -63,7 +63,17 @@ The HTTP API payload format 2.0 adapter, with hand-built events and no AWS acces
 - UTF-8 and base64 request bodies, the body size limit, and empty bodies;
 - only the authorizer's validated `sub` claim becomes the verified subject; other claims are ignored, and missing or malformed claims leave it unset;
 - text, base64 binary, and empty responses with their status and headers;
-- through the shared handler: unauthenticated `401`, authenticated requests, a JSON claim create, a base64 receipt upload returned as a binary download, validation and size errors, a generic `500`, and no roles taken from token claims.
+- through the AWS API handler: unauthenticated `401`, authenticated requests, a JSON claim create, a base64 receipt upload returned as a binary download, validation and size errors, a generic `500`, and no roles taken from token claims.
+
+## AWS authentication boundary (`services/api/test/aws-api.test.ts`)
+
+The AWS API handler and route set against the local adapters:
+
+- the AWS route set equals the local one without `PUT` and `DELETE /session`, which answer `404`;
+- a verified Cognito subject resolves to the actor from the user directory; missing and unknown subjects stay unauthenticated, and cookies are ignored;
+- authorization follows directory roles, not role or group headers, and the local runtime ignores verified subjects;
+- `GET /session` on AWS describes only the signed-in user, with an empty `users` list;
+- local development sessions still select, describe, and clear a sample user.
 
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
