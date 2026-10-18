@@ -244,6 +244,12 @@ Against a fake client that applies the approved condition to an existing item:
 - no merchant, purpose, comment, receipt, or name in any payload;
 - every event accepted by the outbox codec, and consistent with the `lastEventVersion` set by the claim transaction builder.
 
+## Cleanup events (`services/api/test/cleanup-events.test.ts`)
+
+- the exact envelope and payload of the receipt deletion and history purge events, with `previousEventVersion` always `null` and the payloads restricted to the approved identifiers;
+- invalid IDs, trace IDs, timestamps, versions, and object keys rejected, version boundaries accepted, and fixed errors that never echo values;
+- both events accepted by the outbox codec and composed with a draft deletion by the transaction composer.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
