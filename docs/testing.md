@@ -257,6 +257,12 @@ Against a fake client that applies the approved condition to an existing item:
 - version, creation-time, previous-event-version, ID, and timestamp validation with boundaries, and fixed errors that never echo values;
 - every event accepted by the outbox codec, and use with the category operation builders and the transaction composer, including `lastEventVersion` recorded only when an event is published.
 
+## DynamoDB outbox state (`services/api/test/dynamodb-outbox-state.test.ts`)
+
+- the strongly consistent read of the derived key, missing items, strict decoding of pending and published items, and malformed or free-text items rejected;
+- the exact conditional `UpdateItem`, a TTL exactly seven days after publication, and applying it to a pending item yielding exactly the encoded published item without index attributes;
+- invalid events and timestamps rejected before any command, and conditional-check and other SDK errors propagated unchanged with only `GetItem` and `UpdateItem` ever sent.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
