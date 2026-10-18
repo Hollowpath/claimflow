@@ -263,6 +263,12 @@ Against a fake client that applies the approved condition to an existing item:
 - the exact conditional `UpdateItem`, a TTL exactly seven days after publication, and applying it to a pending item yielding exactly the encoded published item without index attributes;
 - invalid events and timestamps rejected before any command, and conditional-check and other SDK errors propagated unchanged with only `GetItem` and `UpdateItem` ever sent.
 
+## DynamoDB pending outbox query (`services/api/test/dynamodb-pending-outbox.test.ts`)
+
+- the exact eventually consistent `GSI4` query, oldest first, with no filter or paging cursor, and results bounded by the cutoff (exclusive) and the limit;
+- empty results, limits of 1 and 10, ordering by time and then event ID, and strict decoding of every item with published, malformed, free-text, and unexpected items rejected;
+- invalid table names, cutoffs, and limits rejected before any command, and SDK errors propagated unchanged.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
