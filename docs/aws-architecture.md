@@ -768,6 +768,12 @@ Before a cursor is used as `ExclusiveStartKey`, all of the following must hold. 
 6. The partition values equal the expected values for this request (table above). A cursor carrying `OUTBOX#PENDING` or any other value is rejected.
 7. Key shapes match: `PK` is `CLAIM#<id>`; `SK` is `CLAIM` (or `HISTORY#` followed by ten digits for history); index sort keys match `<ISO-8601 instant>#<id>`.
 
+The JSON is canonical: object keys are sorted at every level, with no whitespace, and the base64url text has no padding. A cursor that does not re-encode to exactly the same text, or whose JSON is not in canonical form, is rejected. History cursors use `"index": "table"` for the base table.
+
+### Implementation
+
+`services/api/src/adapters/aws/dynamodb-cursor.ts` encodes and validates cursors; an invalid cursor produces the same `ValidationError` with `INVALID_CURSOR` as the local runtime, before any query is sent. The read adapters in `services/api/src/adapters/aws/dynamodb-readers.ts` implement A1, A5–A10, C1, and C2 with `GetItem` and `Query` only, decode every item with the item codecs (section 7), and match the repository read methods; write methods are not implemented yet. A page query asks for `limit + 1` items and keeps querying from `LastEvaluatedKey` when DynamoDB returns a partial response, so a page is full whenever more items exist. Its cursor is the key of the last item returned, never of the look-ahead item. Category listing reads every page of the bounded `CATEGORIES` partition.
+
 Signing cursors with an HMAC is optional hardening (section 24).
 
 ## 14. TTL policies

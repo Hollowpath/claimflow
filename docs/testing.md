@@ -119,6 +119,23 @@ Pure encoders and decoders for claim, history, and category items:
 - decoding rejected for wrong keys or entity types, invalid statuses, actions, versions, timestamps, amounts, receipts, settings, and metadata, and missing, wrong, or unexpected index attributes, with errors that never reveal stored values or malformed keys;
 - receipt file names not already in sanitized form (paths, control or unsafe characters, leading dots, overlong names) and untrimmed category names, refused when encoding and rejected when decoding.
 
+## DynamoDB cursors (`services/api/test/dynamodb-cursor.test.ts`)
+
+- the canonical version 1 base64url JSON format, and round trips for the employee, queue, status, all-claims, and history lists;
+- `INVALID_CURSOR` for empty, oversized, non-base64url, padded, non-JSON, and non-canonical cursors, missing or extra envelope fields, wrong versions, lists, or indexes, and missing, extra, or non-string key attributes;
+- wrong partitions (including `OUTBOX#PENDING`), table and index key shapes, timestamp-plus-ID sort keys, and sort keys naming another claim;
+- cursors bound to the caller, manager, status, list, and claim.
+
+## DynamoDB read adapters (`services/api/test/dynamodb-readers.test.ts`)
+
+Against an in-memory fake table that applies key order, `Limit`, `ExclusiveStartKey`, and `LastEvaluatedKey` as DynamoDB does, and can return partial responses:
+
+- the exact `GetItem` and `Query` inputs for A1, A5–A10, C1, and C2: keys, index names, consistency, and scan direction;
+- missing claims and categories, a missing category counted as unused, and malformed items rejected through the codecs;
+- look-ahead pages of at most `limit` items with a cursor for the last returned item, no empty final page, and continuation through partial responses;
+- cursors from another list, user, status, or claim, and malformed or oversized cursors, rejected before any query;
+- every page of the category partition, and only `GetItem` and `Query` ever sent.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

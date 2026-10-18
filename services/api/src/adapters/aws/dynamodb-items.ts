@@ -443,7 +443,7 @@ type Fail = (problem: string) => never;
 /** Canonical `Date.toISOString` timestamps, which sort as text by time. */
 const isoTimestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
-function isIsoTimestamp(value: string): boolean {
+export function isIsoTimestamp(value: string): boolean {
   if (!isoTimestampPattern.test(value)) {
     return false;
   }
