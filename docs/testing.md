@@ -176,6 +176,14 @@ Against a fake client that applies the approved condition to an existing item:
 - rejection of empty business items, wrong tables, malformed or unsupported operations and keys, duplicate targets including collisions with outbox and idempotency items, and more than 100 operations, with exactly 100 accepted;
 - errors that never name key values, and no DynamoDB command ever sent.
 
+## DynamoDB category operations (`services/api/test/dynamodb-category-operations.test.ts`)
+
+- the exact `Put`, `Update`, `Delete`, and `ConditionCheck` inputs and their exported conditions;
+- creation at version 1 with no claims and creation as the latest event, and updates that set every mutable field and never `claimCount`, `createdAt`, keys, identity, or indexes;
+- next-version and expected-version validation, including the largest safe version, and invalid versions, IDs, guards, and category values refused;
+- deletion only at the expected version with an unused counter, guarded increments, underflow-safe decrements, and the separate version and active check;
+- every operation on the injected table and category key, no free text in conditions or errors, use with the transaction composer, and no DynamoDB command sent.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

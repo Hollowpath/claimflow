@@ -536,6 +536,16 @@ A claim write that depends on category policy must fail if the category changed 
 
 **Counter decrements** always require `attribute_exists(PK) AND claimCount >= :one`. `ADD` on a missing item would otherwise create it, and a decrement below zero would hide a bookkeeping error.
 
+**Category operation builders.** `services/api/src/adapters/aws/dynamodb-category-operations.ts` builds these category operations as transaction items for the transaction envelope (section 8), without sending them:
+
+- **Create:** `Put` of the codec-encoded item at version 1, with `claimCount = 0` and `lastEventVersion = 1`, conditioned on `attribute_not_exists(PK)`.
+- **Update:** an `Update`, not a replacing `Put`, at `expectedVersion`. The new version must be `expectedVersion + 1`. It sets every mutable field, `version`, `updatedAt`, `updatedBy`, and `lastEventVersion`, and never `claimCount` or `createdAt`, so a concurrent counter change is kept.
+- **Delete:** a `Delete` with the version and `claimCount` condition above.
+- **Counter:** `ADD claimCount :one` with the guard `#version = :readVersion AND #active = :true`, and `ADD claimCount :minusOne` with the decrement condition. Neither changes `version` or `lastEventVersion`.
+- **Guard check:** the same guard as a `ConditionCheck`, for submissions without a counter change.
+
+The condition texts are exported constants. Guards must require an active category; a `CategoryGuard` with `mustBeActive: false` is refused rather than reinterpreted. Category IDs and versions are validated before an operation is returned, and category values are validated by the category codec.
+
 **When recovery finds that the category changed** (section 10), the service runs the category decision once more with the reread category, within the same request and idempotency key; nothing was committed. A deactivated category or a lowered limit then produces the normal `400 VALIDATION_FAILED`. If the category changes again before the second commit, the request returns `409 VERSION_CONFLICT`.
 
 ## 10. Idempotency
