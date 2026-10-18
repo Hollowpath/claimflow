@@ -15,6 +15,8 @@ const BUCKET_TYPE = 'AWS::S3::Bucket';
 const BUCKET_POLICY_TYPE = 'AWS::S3::BucketPolicy';
 const OAC_TYPE = 'AWS::CloudFront::OriginAccessControl';
 const DISTRIBUTION_TYPE = 'AWS::CloudFront::Distribution';
+const CLIENT_TYPE = 'AWS::Cognito::UserPoolClient';
+const DOMAIN_TYPE = 'AWS::Cognito::UserPoolDomain';
 
 interface TableResource {
   readonly Properties: Record<string, any>;
@@ -36,6 +38,11 @@ describe('ClaimFlowStack', () => {
   let webBucketLogicalId: string;
   let distribution: TableResource;
   let distributionLogicalId: string;
+  let userPoolLogicalId: string;
+  let webClient: TableResource;
+  let webClientLogicalId: string;
+  let domain: TableResource;
+  let domainLogicalId: string;
 
   const resourceOf = (construct: IConstruct): [string, TableResource] => {
     const logicalId = stack.getLogicalId(
@@ -85,6 +92,9 @@ describe('ClaimFlowStack', () => {
     [bucketLogicalId, bucket] = resourceOf(stack.receiptBucket);
     [webBucketLogicalId, webBucket] = resourceOf(stack.webAssetsBucket);
     [distributionLogicalId, distribution] = resourceOf(stack.webDistribution);
+    [userPoolLogicalId] = resourceOf(stack.userPool);
+    [webClientLogicalId, webClient] = resourceOf(stack.webClient);
+    [domainLogicalId, domain] = resourceOf(stack.userPoolDomain);
   });
 
   describe('stack', () => {
@@ -96,7 +106,7 @@ describe('ClaimFlowStack', () => {
       expect(stack.region).toBe('ap-southeast-1');
     });
 
-    it('contains only the table, the user pool, the two buckets with their policies, and the web distribution', () => {
+    it('contains only the expected resources', () => {
       const resourceTypes = Object.values(
         (template.toJSON().Resources ?? {}) as Record<string, { Type: string }>,
       )
@@ -113,6 +123,8 @@ describe('ClaimFlowStack', () => {
           BUCKET_POLICY_TYPE,
           OAC_TYPE,
           DISTRIBUTION_TYPE,
+          CLIENT_TYPE,
+          DOMAIN_TYPE,
         ].sort(),
       );
       template.resourceCountIs('AWS::KMS::Key', 0);
@@ -120,10 +132,11 @@ describe('ClaimFlowStack', () => {
 
     it.each([
       'AWS::Cognito::IdentityPool',
-      'AWS::Cognito::UserPoolClient',
-      'AWS::Cognito::UserPoolDomain',
       'AWS::Cognito::UserPoolUser',
       'AWS::Cognito::UserPoolGroup',
+      'AWS::Cognito::UserPoolIdentityProvider',
+      'AWS::Cognito::UserPoolResourceServer',
+      'AWS::Cognito::UserPoolUICustomizationAttachment',
       'AWS::Cognito::ManagedLoginBranding',
       'AWS::Lambda::Function',
       'AWS::IAM::Role',
@@ -549,6 +562,141 @@ describe('ClaimFlowStack', () => {
       template.hasOutput('WebAssetsBucketName', {
         Value: { Ref: webBucketLogicalId },
       });
+    });
+
+    it('exports the web app client ID and the classic hosted UI base URL', () => {
+      template.hasOutput('WebClientId', { Value: { Ref: webClientLogicalId } });
+      expect(template.toJSON().Outputs).not.toHaveProperty(
+        'ManagedLoginBaseUrl',
+      );
+      template.hasOutput('HostedUiBaseUrl', {
+        Value: {
+          'Fn::Join': [
+            '',
+            [
+              'https://',
+              { Ref: domainLogicalId },
+              '.auth.ap-southeast-1.amazoncognito.com',
+            ],
+          ],
+        },
+      });
+    });
+  });
+
+  describe('web app client', () => {
+    const webUrl = (path: string) => ({
+      'Fn::Join': [
+        '',
+        [
+          'https://',
+          { 'Fn::GetAtt': [distributionLogicalId, 'DomainName'] },
+          path,
+        ],
+      ],
+    });
+
+    it('is the only app client, named ClaimFlowWeb, on the ClaimFlow user pool', () => {
+      template.resourceCountIs(CLIENT_TYPE, 1);
+      expect(webClient.Properties.ClientName).toBe('ClaimFlowWeb');
+      expect(webClient.Properties.UserPoolId).toEqual({
+        Ref: userPoolLogicalId,
+      });
+    });
+
+    it('is a public client without a secret', () => {
+      expect(webClient.Properties.GenerateSecret).toBe(false);
+    });
+
+    it('allows only the authorization code grant', () => {
+      expect(webClient.Properties.AllowedOAuthFlowsUserPoolClient).toBe(true);
+      expect(webClient.Properties.AllowedOAuthFlows).toEqual(['code']);
+    });
+
+    it('allows no direct sign-in flows, only token refresh', () => {
+      expect(webClient.Properties.ExplicitAuthFlows).toEqual([
+        'ALLOW_REFRESH_TOKEN_AUTH',
+      ]);
+    });
+
+    it('uses the user pool as the only identity provider', () => {
+      expect(webClient.Properties.SupportedIdentityProviders).toEqual([
+        'COGNITO',
+      ]);
+    });
+
+    it('limits OAuth scopes to openid and email', () => {
+      expect(webClient.Properties.AllowedOAuthScopes).toEqual([
+        'openid',
+        'email',
+      ]);
+    });
+
+    it('redirects only to the CloudFront and local callback routes, defaulting to CloudFront', () => {
+      expect(webClient.Properties.CallbackURLs).toEqual([
+        webUrl('/auth/callback'),
+        'http://localhost:5173/auth/callback',
+      ]);
+      expect(webClient.Properties.DefaultRedirectURI).toEqual(
+        webUrl('/auth/callback'),
+      );
+    });
+
+    it('signs out only to the CloudFront and local application roots', () => {
+      expect(webClient.Properties.LogoutURLs).toEqual([
+        webUrl('/'),
+        'http://localhost:5173/',
+      ]);
+    });
+
+    it('issues one-hour access and ID tokens and 30-day refresh tokens', () => {
+      expect(webClient.Properties).toMatchObject({
+        AccessTokenValidity: 60,
+        IdTokenValidity: 60,
+        RefreshTokenValidity: 30 * 24 * 60,
+        TokenValidityUnits: {
+          AccessToken: 'minutes',
+          IdToken: 'minutes',
+          RefreshToken: 'minutes',
+        },
+      });
+    });
+
+    it('enables token revocation and prevents user existence errors', () => {
+      expect(webClient.Properties.EnableTokenRevocation).toBe(true);
+      expect(webClient.Properties.PreventUserExistenceErrors).toBe('ENABLED');
+    });
+  });
+
+  describe('classic hosted UI', () => {
+    it('uses a Cognito prefix domain derived from ClaimFlow and the account, with the classic hosted UI', () => {
+      template.resourceCountIs(DOMAIN_TYPE, 1);
+      expect(domain.Properties).toEqual({
+        Domain: 'claimflow-123456789012',
+        ManagedLoginVersion: 1,
+        UserPoolId: { Ref: userPoolLogicalId },
+      });
+    });
+
+    it('keeps the user pool on the Lite feature plan', () => {
+      expect(userPool.Properties.UserPoolTier).toBe('LITE');
+    });
+
+    it('derives the domain prefix from the deploying account', () => {
+      const other = new ClaimFlowStack(new App(), 'ClaimFlow', {
+        env: { account: '210987654321', region: CLAIMFLOW_REGION },
+      });
+      Template.fromStack(other).hasResourceProperties(DOMAIN_TYPE, {
+        Domain: 'claimflow-210987654321',
+      });
+    });
+
+    it('has no managed login branding or custom hosted UI styling', () => {
+      template.resourceCountIs('AWS::Cognito::ManagedLoginBranding', 0);
+      template.resourceCountIs(
+        'AWS::Cognito::UserPoolUICustomizationAttachment',
+        0,
+      );
     });
   });
 });

@@ -11,12 +11,13 @@ The application defines a single stack, `ClaimFlow` (class `ClaimFlowStack` in `
 
 The stack defines these resources:
 
-| Resource                                                      | Status                                   |
-| ------------------------------------------------------------- | ---------------------------------------- |
-| DynamoDB table `ClaimFlow`                                    | Defined and deployed in `ap-southeast-1` |
-| Cognito User Pool `ClaimFlow`                                 | Defined and deployed in `ap-southeast-1` |
-| S3 receipt bucket                                             | Defined and deployed in `ap-southeast-1` |
-| Web hosting: S3 web assets bucket and CloudFront distribution | Defined and deployed in `ap-southeast-1` |
+| Resource                                                           | Status                                   |
+| ------------------------------------------------------------------ | ---------------------------------------- |
+| DynamoDB table `ClaimFlow`                                         | Defined and deployed in `ap-southeast-1` |
+| Cognito User Pool `ClaimFlow`                                      | Defined and deployed in `ap-southeast-1` |
+| S3 receipt bucket                                                  | Defined and deployed in `ap-southeast-1` |
+| Web hosting: S3 web assets bucket and CloudFront distribution      | Defined and deployed in `ap-southeast-1` |
+| Cognito web app client `ClaimFlowWeb` and classic hosted UI domain | Defined and deployed in `ap-southeast-1` |
 
 ### DynamoDB table `ClaimFlow`
 
@@ -65,7 +66,38 @@ The email address is both the sign-in identifier and the only account-recovery d
 
 Authorization data is not stored in Cognito: there are no role groups and no role or manager attributes. Roles and manager assignments live in DynamoDB user-profile items keyed by the user's Cognito `sub` (section 17 of the architecture document).
 
-The user pool has no app client, domain, managed login, callback URLs, users, Lambda triggers, or SES configuration yet. The callback URLs will use the web distribution's HTTPS origin (see [Web hosting](#web-hosting)); the app client is added when the application is connected to Cognito.
+The user pool has no users, groups, social or federated identity providers, Lambda triggers, or SES configuration. Its app client and classic hosted UI domain are described in the next section; adding them does not change the user pool's settings.
+
+### Cognito web app client and classic hosted UI
+
+The web application's app client (`webClient` on the stack) and the classic hosted UI domain (`userPoolDomain`) are defined and deployed in `ap-southeast-1`. The web application has **no Cognito integration yet**: it still uses development sign-in locally.
+
+App client `ClaimFlowWeb`:
+
+| Setting               | Value                                                                                                     |
+| --------------------- | --------------------------------------------------------------------------------------------------------- |
+| Client type           | Public; no client secret                                                                                  |
+| OAuth grants          | Authorization code only; implicit and client-credentials grants disabled                                  |
+| Direct API flows      | `ALLOW_REFRESH_TOKEN_AUTH` only; users sign in on the classic hosted UI                                   |
+| Identity providers    | The user pool (`COGNITO`) only                                                                            |
+| OAuth scopes          | `openid`, `email`                                                                                         |
+| Callback URLs         | `https://<CloudFront domain>/auth/callback` (the default redirect), `http://localhost:5173/auth/callback` |
+| Sign-out URLs         | `https://<CloudFront domain>/`, `http://localhost:5173/`                                                  |
+| Token validity        | Access and ID tokens 1 hour; refresh tokens 30 days                                                       |
+| Token revocation      | Enabled                                                                                                   |
+| User existence errors | Prevented: sign-in errors do not reveal whether a user exists                                             |
+
+`<CloudFront domain>` is the web distribution's domain name, resolved by CloudFormation at deployment. The localhost URLs allow the Vite development server to sign in against Cognito.
+
+Classic hosted UI:
+
+| Setting | Value                                                                                                                 |
+| ------- | --------------------------------------------------------------------------------------------------------------------- |
+| Domain  | Cognito prefix domain `claimflow-<account ID>`: deterministic and unique, because prefixes are global across accounts |
+| Version | Classic hosted UI (`ManagedLoginVersion.CLASSIC_HOSTED_UI`)                                                           |
+| Styling | Cognito's default classic hosted UI; no custom CSS, logos, or branding                                                |
+
+The user pool uses the Lite feature plan, which supports the classic hosted UI but not the newer managed login. The stack therefore creates no `AWS::Cognito::ManagedLoginBranding` or UI customization resource.
 
 ### S3 receipt bucket
 
@@ -126,11 +158,13 @@ The OAC read grant is added to the web assets bucket's `AWS::S3::BucketPolicy`, 
 
 ### Outputs
 
-| Output                      | Value                                                 |
-| --------------------------- | ----------------------------------------------------- |
-| `WebUrl`                    | `https://` followed by the distribution's domain name |
-| `WebDistributionDomainName` | The distribution's `*.cloudfront.net` domain name     |
-| `WebAssetsBucketName`       | The generated name of the web assets bucket           |
+| Output                      | Value                                                                  |
+| --------------------------- | ---------------------------------------------------------------------- |
+| `WebUrl`                    | `https://` followed by the distribution's domain name                  |
+| `WebDistributionDomainName` | The distribution's `*.cloudfront.net` domain name                      |
+| `WebAssetsBucketName`       | The generated name of the web assets bucket                            |
+| `WebClientId`               | The ID of the `ClaimFlowWeb` app client                                |
+| `HostedUiBaseUrl`           | `https://claimflow-<account ID>.auth.ap-southeast-1.amazoncognito.com` |
 
 Apart from the CloudFront read grant on the web assets bucket, the stack grants no IAM permissions and contains no Lambda functions, API Gateway resources, or other resources yet.
 
@@ -144,4 +178,4 @@ Apart from the CloudFront read grant on the web assets bucket, the stack grants 
 
 Bootstrapping and deploying (`npx cdk bootstrap`, `npx cdk deploy`) change an AWS account. Run them only deliberately, never automatically.
 
-Because the table and the user pool both have deletion protection and a `RETAIN` removal policy, deleting the stack does not delete them or their data. Removing either requires disabling its deletion protection and deleting it explicitly. The receipt bucket and the web assets bucket also have a `RETAIN` removal policy: deleting the stack keeps them and their objects, and removing either requires emptying and deleting it explicitly. The CloudFront distribution and its origin access control are deleted with the stack.
+Because the table and the user pool both have deletion protection and a `RETAIN` removal policy, deleting the stack does not delete them or their data. Removing either requires disabling its deletion protection and deleting it explicitly. The receipt bucket and the web assets bucket also have a `RETAIN` removal policy: deleting the stack keeps them and their objects, and removing either requires emptying and deleting it explicitly. The CloudFront distribution and its origin access control are deleted with the stack, as are the app client and the classic hosted UI domain.

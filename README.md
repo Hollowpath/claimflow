@@ -107,7 +107,8 @@ ClaimFlow's AWS infrastructure is being built incrementally, following [the AWS 
 
 - **Infrastructure:** a TypeScript AWS CDK application in `infrastructure/` defines the `ClaimFlow` DynamoDB table, the `ClaimFlow` Cognito User Pool, and a private S3 receipt bucket, all deployed in `ap-southeast-1`. It also defines web hosting for the React application, a separate private S3 bucket behind CloudFront, which is deployed but holds no built files yet, so the application is not available through CloudFront.
 - **Application runtime:** the application still runs only locally, using development sign-in and the local adapters described above. It is not connected to the User Pool or the receipt bucket, and receipts are still stored locally.
-- **Future increments:** the Cognito app client and the application's Cognito integration, the receipt bucket's CORS rules and the S3 receipt adapter, publishing the built web application, the AWS API runtime, the other AWS adapters, and the remaining approved components.
+- **Cognito sign-in:** the stack also defines the `ClaimFlowWeb` app client and a Cognito domain for the classic hosted UI, both deployed in `ap-southeast-1`. The web application has no Cognito integration yet and still uses development sign-in locally.
+- **Future increments:** the application's Cognito integration, the receipt bucket's CORS rules and the S3 receipt adapter, publishing the built web application, the AWS API runtime, the other AWS adapters, and the remaining approved components.
 - **Deployments:** AWS deployments are run manually and never automatically.
 
 Running the application on AWS requires replacing development sign-in with Cognito and the local adapters with AWS adapters backed by durable storage that supports concurrent API instances. The application services already depend only on the port interfaces listed above, so new adapters can be added without changing the domain rules or the API contract.

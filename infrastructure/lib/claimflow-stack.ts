@@ -21,6 +21,14 @@ export const CLAIMFLOW_INDEX_NAMES = ['GSI1', 'GSI2', 'GSI3', 'GSI4'] as const;
 /** Uploaded receipts not yet attached to a claim (docs/aws-architecture.md, section 11). */
 export const CLAIMFLOW_PENDING_UPLOAD_PREFIX = 'uploads/pending/';
 
+export const CLAIMFLOW_WEB_CLIENT_NAME = 'ClaimFlowWeb';
+
+/** The Vite development server, which runs the web application locally. */
+export const CLAIMFLOW_LOCAL_WEB_ORIGIN = 'http://localhost:5173';
+
+/** Path of the web application's sign-in callback route. */
+export const CLAIMFLOW_AUTH_CALLBACK_PATH = '/auth/callback';
+
 const stringKey = (name: string): dynamodb.Attribute => ({
   name,
   type: dynamodb.AttributeType.STRING,
@@ -45,6 +53,12 @@ export class ClaimFlowStack extends cdk.Stack {
 
   /** Serves the web application over HTTPS from the web assets bucket. */
   public readonly webDistribution: cloudfront.Distribution;
+
+  /** The web application's public app client for the classic hosted UI. */
+  public readonly webClient: cognito.UserPoolClient;
+
+  /** Cognito prefix domain that hosts the classic hosted UI pages. */
+  public readonly userPoolDomain: cognito.UserPoolDomain;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, { description: CLAIMFLOW_STACK_DESCRIPTION, ...props });
@@ -163,6 +177,57 @@ export class ClaimFlowStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'WebAssetsBucketName', {
       description: 'S3 bucket that holds the built web application',
       value: this.webAssetsBucket.bucketName,
+    });
+
+    const webOrigin = `https://${this.webDistribution.distributionDomainName}`;
+    const webCallbackUrl = `${webOrigin}${CLAIMFLOW_AUTH_CALLBACK_PATH}`;
+
+    // A public client for the browser: no secret, and the authorization code
+    // grant only. Sign-in happens on the classic hosted UI, so the only
+    // direct API flow the client allows is refreshing tokens.
+    this.webClient = this.userPool.addClient('WebClient', {
+      userPoolClientName: CLAIMFLOW_WEB_CLIENT_NAME,
+      generateSecret: false,
+      authFlows: { userSrp: false },
+      supportedIdentityProviders: [
+        cognito.UserPoolClientIdentityProvider.COGNITO,
+      ],
+      oAuth: {
+        flows: {
+          authorizationCodeGrant: true,
+          implicitCodeGrant: false,
+          clientCredentials: false,
+        },
+        scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL],
+        callbackUrls: [
+          webCallbackUrl,
+          `${CLAIMFLOW_LOCAL_WEB_ORIGIN}${CLAIMFLOW_AUTH_CALLBACK_PATH}`,
+        ],
+        logoutUrls: [`${webOrigin}/`, `${CLAIMFLOW_LOCAL_WEB_ORIGIN}/`],
+        defaultRedirectUri: webCallbackUrl,
+      },
+      accessTokenValidity: cdk.Duration.hours(1),
+      idTokenValidity: cdk.Duration.hours(1),
+      refreshTokenValidity: cdk.Duration.days(30),
+      enableTokenRevocation: true,
+      preventUserExistenceErrors: true,
+    });
+
+    // Domain prefixes are global across all AWS accounts, so the prefix
+    // includes the account ID. The Lite feature plan supports only the
+    // classic hosted UI, not the newer managed login.
+    this.userPoolDomain = this.userPool.addDomain('Domain', {
+      cognitoDomain: { domainPrefix: `claimflow-${this.account}` },
+      managedLoginVersion: cognito.ManagedLoginVersion.CLASSIC_HOSTED_UI,
+    });
+
+    new cdk.CfnOutput(this, 'WebClientId', {
+      description: 'Cognito app client ID of the web application',
+      value: this.webClient.userPoolClientId,
+    });
+    new cdk.CfnOutput(this, 'HostedUiBaseUrl', {
+      description: 'Base URL of the Cognito classic hosted UI',
+      value: this.userPoolDomain.baseUrl(),
     });
   }
 }
