@@ -19,6 +19,7 @@
     "@aws-sdk/lib-dynamodb": "^3.1146.0",
     "@aws-sdk/s3-presigned-post": "^3.1146.0",
     "@aws-sdk/s3-request-presigner": "^3.1146.0",
+    "@aws-sdk/util-dynamodb": "^3.996.9",
     "@claimflow/contracts": "0.2.0",
     "@claimflow/domain": "0.2.0",
     "zod": "^4.6.6"

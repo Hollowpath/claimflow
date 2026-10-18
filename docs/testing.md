@@ -282,6 +282,16 @@ Against a fake client that applies the approved condition to an existing item:
 - partial and whole-call failures, unreliable EventBridge results treated as failures, read and mark failures, and conditional-check races ignored by error name only;
 - the first failure chosen in batch order, no operational error thrown, and invalid batches or sequence numbers rejected before any read.
 
+## Outbox stream handler (`services/api/test/outbox-stream-handler.test.ts`)
+
+Using DynamoDB stream records built with the real marshaller:
+
+- decoding of images with numbers and nested maps, delivery to the workflow in stream order, and batches of up to 10 relevant records;
+- records outside the `INSERT` and `OUTBOX#` filter ignored, and counted neither toward the limit nor for sequence numbers;
+- malformed relevant records reported as failed while the others are processed, and the workflow skipped when none decode;
+- the first failure chosen in stream order from decoding and workflow failures, with exactly one entry in the response;
+- a missing sequence number or an oversized batch throwing before anything is published.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
