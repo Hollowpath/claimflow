@@ -68,6 +68,18 @@ describe('receipt files', () => {
   it('limits file name length', () => {
     expect(sanitizeFileName(`${'a'.repeat(300)}.pdf`)).toHaveLength(120);
   });
+
+  it('never ends a shortened name with whitespace', () => {
+    // Character 120 is the space between the two words.
+    const input = `${'a'.repeat(119)} ${'b'.repeat(20)}.pdf`;
+
+    const sanitized = sanitizeFileName(input);
+
+    expect(sanitized.length).toBeLessThanOrEqual(120);
+    expect(sanitized).toBe('a'.repeat(119));
+    expect(sanitized).not.toMatch(/\s$/);
+    expect(sanitizeFileName(sanitized)).toBe(sanitized);
+  });
 });
 
 describe('receipt verification', () => {

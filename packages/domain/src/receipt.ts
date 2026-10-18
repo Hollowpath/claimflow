@@ -66,7 +66,8 @@ export function sanitizeFileName(name: string): string {
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/^\.+/, '');
-  return cleaned.slice(0, fileNameMaxLength) || 'receipt';
+  // Trim again after cutting, in case the cut falls just after a space.
+  return cleaned.slice(0, fileNameMaxLength).trimEnd() || 'receipt';
 }
 
 /** Identifies a supported file type from its leading bytes. */

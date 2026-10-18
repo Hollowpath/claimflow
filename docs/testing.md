@@ -107,6 +107,18 @@ The AWS `UserDirectory` adapter against an in-memory fake document client, with 
 - tokens of exactly 32 lowercase hexadecimal characters, computed as designed, stable for identical or rebuilt payloads regardless of key order, time, or randomness;
 - a different token for any change of actor, idempotency key, fingerprint, category version, timestamp, event ID, claim ID, or item order, and for identity fields that would otherwise run together.
 
+## DynamoDB item codecs (`services/api/test/dynamodb-items.test.ts`)
+
+Pure encoders and decoders for claim, history, and category items:
+
+- the approved example items encoded exactly, and round trips that preserve every domain field, the receipt, decision comments, and persistence metadata;
+- every claim status with its index values, GSI2 present only for `SUBMITTED` and `UNDER_REVIEW`, absent optional attributes omitted, and no free text in any index key;
+- encoding refused for open claims without a manager or submission time, non-canonical timestamps, unsafe IDs, and invalid versions or event versions;
+- history sort keys padded to 10 digits, sorting in version order across digit boundaries, and versions outside the representable range rejected;
+- categories with their claim count and event version, and no index attributes on history or category items;
+- decoding rejected for wrong keys or entity types, invalid statuses, actions, versions, timestamps, amounts, receipts, settings, and metadata, and missing, wrong, or unexpected index attributes, with errors that never reveal stored values or malformed keys;
+- receipt file names not already in sanitized form (paths, control or unsafe characters, leading dots, overlong names) and untrimmed category names, refused when encoding and rejected when decoding.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

@@ -309,6 +309,10 @@ All values are fictional. Money is stored in integer minor units.
 
 `version` changes only when an administrator changes the category. `claimCount` changes when claims start or stop using the category and never changes `version`.
 
+### Item codecs
+
+`services/api/src/adapters/aws/dynamodb-items.ts` converts claims, history entries, and categories to and from these items without sending any commands. Persistence-only attributes stay out of the domain values: decoding returns the claim with its optional `lastEventVersion`, and the category with its `claimCount` and optional `lastEventVersion`. Encoding omits absent optional attributes and derives every key and index attribute as specified in section 5; it refuses a claim that cannot be indexed correctly, such as a `SUBMITTED` or `UNDER_REVIEW` claim without an assigned manager or submission time, and a history version outside 1 to 9,999,999,999. Decoding validates every attribute, the keys against the IDs, the exact index values, the presence of GSI2 only for open claims, and the absence of index attributes on history and category items. It rejects any other attribute. Malformed items raise `ItemIntegrityError`, which names the item key only when it has a well-formed ClaimFlow key shape (otherwise a generic identifier) and the kind of problem, never a stored value. Receipt file names must already be in the domain's sanitized form and category names already trimmed. Free text such as merchants, purposes, file names, and comments never appears in a key or index attribute.
+
 ### User profile
 
 ```json
