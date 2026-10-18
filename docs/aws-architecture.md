@@ -551,6 +551,8 @@ A claim write that depends on category policy must fail if the category changed 
 
 There is no in-progress state, so there is nothing to release after a failure.
 
+The lookup in step 1, and the receipt metadata read in section 11, are implemented by `DynamoDbIdempotencyReader` and `DynamoDbReceiptMetadataReader` in `services/api/src/adapters/aws/dynamodb-lookups.ts`. Each sends one strongly consistent `GetItem` on the codec's key and decodes the item with its codec; a malformed item raises `ItemIntegrityError`, and SDK errors propagate unchanged. The idempotency lookup takes the current time in epoch seconds and treats a record with `expiresAt` before it as absent, while a record expiring exactly now is still returned, matching the `expiresAt < :nowEpoch` write condition, so it never depends on TTL deletion.
+
 ### Recovery after a cancelled transaction
 
 A cancelled transaction is identified only by its SDK error type, `TransactionCanceledException`. Recovery does not use per-item cancellation reasons and never parses exception message text. Instead it rereads state, which is deterministic and does not depend on how the SDK exposes the cause.

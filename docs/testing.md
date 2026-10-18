@@ -152,6 +152,13 @@ Against an in-memory fake table that applies key order, `Limit`, `ExclusiveStart
 - rejection of wrong keys, IDs, entity types, states, timestamps, TTLs, content types, sizes, checksums, and object keys, of missing, forbidden, and unexpected state attributes, and of index attributes;
 - unsanitized file names refused and rejected in every state, and errors that never reveal file names or malformed keys.
 
+## DynamoDB lookups (`services/api/test/dynamodb-lookups.test.ts`)
+
+- the exact receipt and idempotency keys with `ConsistentRead: true`, and only `GetCommand` ever sent;
+- every receipt state, completed and rejected idempotency records, and missing items;
+- idempotency records before, exactly at, and after `expiresAt`, treated as absent only once expired;
+- malformed items raising `ItemIntegrityError`, invalid current times rejected before reading, and SDK errors propagating unchanged.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
