@@ -3,7 +3,10 @@ import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct } from 'constructs';
 
 /** The only AWS Region ClaimFlow is deployed to. */
@@ -28,6 +31,25 @@ export const CLAIMFLOW_LOCAL_WEB_ORIGIN = 'http://localhost:5173';
 
 /** Path of the web application's sign-in callback route. */
 export const CLAIMFLOW_AUTH_CALLBACK_PATH = '/auth/callback';
+
+/** The custom event bus that carries ClaimFlow's events (section 4). */
+export const CLAIMFLOW_EVENT_BUS_NAME = 'claimflow';
+
+/** The source of every ClaimFlow event (section 15). */
+export const CLAIMFLOW_EVENT_SOURCE = 'claimflow.api';
+
+export const CLAIMFLOW_CLEANUP_QUEUE_NAME = 'claimflow-cleanup';
+
+export const CLAIMFLOW_CLEANUP_DLQ_NAME = 'claimflow-cleanup-dlq';
+
+/** The internal events that only the cleanup worker handles (section 15). */
+export const CLAIMFLOW_CLEANUP_EVENT_TYPES = [
+  'internal.receipt-object-deletion-requested',
+  'internal.claim-history-purge-requested',
+] as const;
+
+/** A queue message is received at most this often before it is moved to the dead-letter queue. */
+export const CLAIMFLOW_CLEANUP_MAX_RECEIVES = 5;
 
 const stringKey = (name: string): dynamodb.Attribute => ({
   name,
@@ -59,6 +81,15 @@ export class ClaimFlowStack extends cdk.Stack {
 
   /** Cognito prefix domain that hosts the classic hosted UI pages. */
   public readonly userPoolDomain: cognito.UserPoolDomain;
+
+  /** Routes ClaimFlow events to their consumers. */
+  public readonly eventBus: events.EventBus;
+
+  /** Receives the internal cleanup events for the cleanup worker. */
+  public readonly cleanupQueue: sqs.Queue;
+
+  /** Holds cleanup messages that failed repeatedly, and undeliverable events. */
+  public readonly cleanupDeadLetterQueue: sqs.Queue;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, { description: CLAIMFLOW_STACK_DESCRIPTION, ...props });
@@ -228,6 +259,61 @@ export class ClaimFlowStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'HostedUiBaseUrl', {
       description: 'Base URL of the Cognito classic hosted UI',
       value: this.userPoolDomain.baseUrl(),
+    });
+
+    this.eventBus = new events.EventBus(this, 'EventBus', {
+      eventBusName: CLAIMFLOW_EVENT_BUS_NAME,
+    });
+
+    // Standard queues with SQS-managed encryption (no KMS key to pay for)
+    // and TLS required. Messages are kept for 4 days, and failures for 14.
+    this.cleanupDeadLetterQueue = new sqs.Queue(
+      this,
+      'CleanupDeadLetterQueue',
+      {
+        queueName: CLAIMFLOW_CLEANUP_DLQ_NAME,
+        encryption: sqs.QueueEncryption.SQS_MANAGED,
+        enforceSSL: true,
+        retentionPeriod: cdk.Duration.days(14),
+      },
+    );
+    this.cleanupQueue = new sqs.Queue(this, 'CleanupQueue', {
+      queueName: CLAIMFLOW_CLEANUP_QUEUE_NAME,
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      retentionPeriod: cdk.Duration.days(4),
+      // Six times the 60-second limit planned for the cleanup function.
+      visibilityTimeout: cdk.Duration.minutes(6),
+      deadLetterQueue: {
+        queue: this.cleanupDeadLetterQueue,
+        maxReceiveCount: CLAIMFLOW_CLEANUP_MAX_RECEIVES,
+      },
+    });
+
+    // Only the two internal cleanup events reach the cleanup queue. Events
+    // EventBridge cannot deliver go to the same dead-letter queue.
+    new events.Rule(this, 'CleanupRule', {
+      ruleName: CLAIMFLOW_CLEANUP_QUEUE_NAME,
+      description: 'Routes internal cleanup events to the cleanup queue',
+      eventBus: this.eventBus,
+      eventPattern: {
+        source: [CLAIMFLOW_EVENT_SOURCE],
+        detailType: [...CLAIMFLOW_CLEANUP_EVENT_TYPES],
+      },
+      targets: [
+        new targets.SqsQueue(this.cleanupQueue, {
+          deadLetterQueue: this.cleanupDeadLetterQueue,
+        }),
+      ],
+    });
+
+    new cdk.CfnOutput(this, 'EventBusName', {
+      description: 'Name of the ClaimFlow event bus',
+      value: this.eventBus.eventBusName,
+    });
+    new cdk.CfnOutput(this, 'CleanupQueueUrl', {
+      description: 'URL of the cleanup worker queue',
+      value: this.cleanupQueue.queueUrl,
     });
   }
 }

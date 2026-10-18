@@ -18,6 +18,7 @@ The stack defines these resources:
 | S3 receipt bucket                                                  | Defined and deployed in `ap-southeast-1` |
 | Web hosting: S3 web assets bucket and CloudFront distribution      | Defined and deployed in `ap-southeast-1` |
 | Cognito web app client `ClaimFlowWeb` and classic hosted UI domain | Defined and deployed in `ap-southeast-1` |
+| EventBridge bus `claimflow`, cleanup queue and dead-letter queue   | Defined and deployed in `ap-southeast-1` |
 
 ### DynamoDB table `ClaimFlow`
 
@@ -156,6 +157,17 @@ The distribution serves only the web application's static files. Routing API req
 
 The OAC read grant is added to the web assets bucket's `AWS::S3::BucketPolicy`, next to the TLS statement. As with the receipt bucket, the policy is deleted with the stack while the bucket is retained.
 
+### Cleanup event delivery
+
+The stack defines the internal cleanup-event path (section 15 of the architecture document). These resources are defined and deployed in `ap-southeast-1`, but nothing publishes to them or consumes from them yet because the Lambda functions and event-source mapping do not exist.
+
+- A custom EventBridge bus named `claimflow` (`eventBus` on the stack).
+- A standard SQS queue `claimflow-cleanup` (`cleanupQueue`): SQS-managed encryption, TLS enforced, 4-day retention, a 6-minute visibility timeout, and redrive to the dead-letter queue after 5 receives.
+- A standard SQS queue `claimflow-cleanup-dlq` (`cleanupDeadLetterQueue`): SQS-managed encryption, TLS enforced, 14-day retention.
+- An EventBridge rule `claimflow-cleanup` on the bus that matches source `claimflow.api` and detail types `internal.receipt-object-deletion-requested` and `internal.claim-history-purge-requested` only. It targets the cleanup queue, with the dead-letter queue as the target's delivery dead-letter queue.
+
+CDK generates the queue resource policies: TLS enforcement on both queues, and a statement allowing only this rule to send to each queue. There are no IAM roles, customer-managed KMS keys, or SNS topics.
+
 ### Outputs
 
 | Output                      | Value                                                                  |
@@ -165,8 +177,10 @@ The OAC read grant is added to the web assets bucket's `AWS::S3::BucketPolicy`, 
 | `WebAssetsBucketName`       | The generated name of the web assets bucket                            |
 | `WebClientId`               | The ID of the `ClaimFlowWeb` app client                                |
 | `HostedUiBaseUrl`           | `https://claimflow-<account ID>.auth.ap-southeast-1.amazoncognito.com` |
+| `EventBusName`              | The name of the `claimflow` event bus                                  |
+| `CleanupQueueUrl`           | The URL of the cleanup queue                                           |
 
-Apart from the CloudFront read grant on the web assets bucket, the stack grants no IAM permissions and contains no Lambda functions, API Gateway resources, or other resources yet.
+Apart from the CloudFront read grant on the web assets bucket, the stack grants no IAM permissions and contains no Lambda functions, API Gateway resources, or other resources yet. The queue policies above are generated resource policies, not IAM roles.
 
 ## Useful commands
 

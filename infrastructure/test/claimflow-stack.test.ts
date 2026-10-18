@@ -4,6 +4,11 @@ import type { IConstruct } from 'constructs';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import {
+  CLAIMFLOW_CLEANUP_DLQ_NAME,
+  CLAIMFLOW_CLEANUP_EVENT_TYPES,
+  CLAIMFLOW_CLEANUP_QUEUE_NAME,
+  CLAIMFLOW_EVENT_BUS_NAME,
+  CLAIMFLOW_EVENT_SOURCE,
   CLAIMFLOW_REGION,
   CLAIMFLOW_STACK_DESCRIPTION,
   ClaimFlowStack,
@@ -17,6 +22,10 @@ const OAC_TYPE = 'AWS::CloudFront::OriginAccessControl';
 const DISTRIBUTION_TYPE = 'AWS::CloudFront::Distribution';
 const CLIENT_TYPE = 'AWS::Cognito::UserPoolClient';
 const DOMAIN_TYPE = 'AWS::Cognito::UserPoolDomain';
+const EVENT_BUS_TYPE = 'AWS::Events::EventBus';
+const RULE_TYPE = 'AWS::Events::Rule';
+const QUEUE_TYPE = 'AWS::SQS::Queue';
+const QUEUE_POLICY_TYPE = 'AWS::SQS::QueuePolicy';
 
 interface TableResource {
   readonly Properties: Record<string, any>;
@@ -125,6 +134,12 @@ describe('ClaimFlowStack', () => {
           DISTRIBUTION_TYPE,
           CLIENT_TYPE,
           DOMAIN_TYPE,
+          EVENT_BUS_TYPE,
+          RULE_TYPE,
+          QUEUE_TYPE,
+          QUEUE_TYPE,
+          QUEUE_POLICY_TYPE,
+          QUEUE_POLICY_TYPE,
         ].sort(),
       );
       template.resourceCountIs('AWS::KMS::Key', 0);
@@ -144,9 +159,15 @@ describe('ClaimFlowStack', () => {
       'AWS::ApiGateway::RestApi',
       'AWS::SES::EmailIdentity',
       'AWS::IAM::User',
-      'AWS::Events::EventBus',
-      'AWS::SQS::Queue',
       'AWS::SNS::Topic',
+      'AWS::Lambda::EventSourceMapping',
+      'AWS::Lambda::Permission',
+      'AWS::Events::Archive',
+      'AWS::Events::Connection',
+      'AWS::Events::ApiDestination',
+      'AWS::Pipes::Pipe',
+      'AWS::Scheduler::Schedule',
+      'AWS::CloudWatch::Alarm',
       'Custom::S3AutoDeleteObjects',
       'Custom::CDKBucketDeployment',
       'AWS::CloudFront::CloudFrontOriginAccessIdentity',
@@ -581,6 +602,193 @@ describe('ClaimFlowStack', () => {
           ],
         },
       });
+    });
+  });
+
+  describe('cleanup event delivery', () => {
+    let busLogicalId: string;
+    let cleanupQueueLogicalId: string;
+    let dlqLogicalId: string;
+    let ruleLogicalId: string;
+
+    const arnOf = (logicalId: string) => ({ 'Fn::GetAtt': [logicalId, 'Arn'] });
+
+    const queuePolicyStatements = (
+      logicalId: string,
+    ): Record<string, any>[] => {
+      const policies = Object.values(
+        template.findResources(QUEUE_POLICY_TYPE, {
+          Properties: { Queues: [{ Ref: logicalId }] },
+        }),
+      ) as TableResource[];
+      expect(policies).toHaveLength(1);
+      return policies[0].Properties.PolicyDocument.Statement;
+    };
+
+    const denyInsecureQueueTransport = (logicalId: string) => ({
+      Effect: 'Deny',
+      Principal: { AWS: '*' },
+      Action: 'sqs:*',
+      Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+      Resource: arnOf(logicalId),
+    });
+
+    beforeAll(() => {
+      [busLogicalId] = resourceOf(stack.eventBus);
+      [cleanupQueueLogicalId] = resourceOf(stack.cleanupQueue);
+      [dlqLogicalId] = resourceOf(stack.cleanupDeadLetterQueue);
+      [ruleLogicalId] = Object.keys(template.findResources(RULE_TYPE));
+    });
+
+    it('defines a custom event bus named claimflow', () => {
+      expect(CLAIMFLOW_EVENT_BUS_NAME).toBe('claimflow');
+      template.resourceCountIs(EVENT_BUS_TYPE, 1);
+      template.hasResourceProperties(EVENT_BUS_TYPE, { Name: 'claimflow' });
+    });
+
+    it('defines exactly two queues', () => {
+      template.resourceCountIs(QUEUE_TYPE, 2);
+      template.resourceCountIs(QUEUE_POLICY_TYPE, 2);
+    });
+
+    it('defines standard queues with SQS-managed encryption', () => {
+      for (const [logicalId, name] of [
+        [cleanupQueueLogicalId, CLAIMFLOW_CLEANUP_QUEUE_NAME],
+        [dlqLogicalId, CLAIMFLOW_CLEANUP_DLQ_NAME],
+      ]) {
+        const { Properties } = template.toJSON().Resources[logicalId];
+        expect(Properties.QueueName).toBe(name);
+        expect(Properties.SqsManagedSseEnabled).toBe(true);
+        expect(Properties).not.toHaveProperty('FifoQueue');
+        expect(Properties).not.toHaveProperty('KmsMasterKeyId');
+      }
+      expect(CLAIMFLOW_CLEANUP_QUEUE_NAME).toBe('claimflow-cleanup');
+      expect(CLAIMFLOW_CLEANUP_DLQ_NAME).toBe('claimflow-cleanup-dlq');
+      template.resourceCountIs('AWS::KMS::Key', 0);
+    });
+
+    it('retains cleanup messages for 4 days and dead letters for 14', () => {
+      template.hasResourceProperties(QUEUE_TYPE, {
+        QueueName: 'claimflow-cleanup',
+        MessageRetentionPeriod: 4 * 24 * 60 * 60,
+      });
+      template.hasResourceProperties(QUEUE_TYPE, {
+        QueueName: 'claimflow-cleanup-dlq',
+        MessageRetentionPeriod: 14 * 24 * 60 * 60,
+      });
+    });
+
+    it('gives the cleanup queue a 6 minute visibility timeout', () => {
+      template.hasResourceProperties(QUEUE_TYPE, {
+        QueueName: 'claimflow-cleanup',
+        VisibilityTimeout: 360,
+      });
+      const dlq = template.toJSON().Resources[dlqLogicalId].Properties;
+      expect(dlq).not.toHaveProperty('VisibilityTimeout');
+    });
+
+    it('redrives to the dead-letter queue after 5 receives', () => {
+      template.hasResourceProperties(QUEUE_TYPE, {
+        QueueName: 'claimflow-cleanup',
+        RedrivePolicy: {
+          deadLetterTargetArn: arnOf(dlqLogicalId),
+          maxReceiveCount: 5,
+        },
+      });
+      const dlq = template.toJSON().Resources[dlqLogicalId].Properties;
+      expect(dlq).not.toHaveProperty('RedrivePolicy');
+    });
+
+    it('enforces TLS on both queues', () => {
+      for (const logicalId of [cleanupQueueLogicalId, dlqLogicalId]) {
+        expect(queuePolicyStatements(logicalId)).toContainEqual(
+          denyInsecureQueueTransport(logicalId),
+        );
+      }
+    });
+
+    it('routes only the two cleanup detail types from claimflow.api', () => {
+      template.resourceCountIs(RULE_TYPE, 1);
+      template.hasResourceProperties(RULE_TYPE, {
+        EventBusName: { Ref: busLogicalId },
+        State: 'ENABLED',
+        EventPattern: {
+          source: ['claimflow.api'],
+          'detail-type': [
+            'internal.receipt-object-deletion-requested',
+            'internal.claim-history-purge-requested',
+          ],
+        },
+      });
+      expect(CLAIMFLOW_EVENT_SOURCE).toBe('claimflow.api');
+      expect([...CLAIMFLOW_CLEANUP_EVENT_TYPES]).toEqual([
+        'internal.receipt-object-deletion-requested',
+        'internal.claim-history-purge-requested',
+      ]);
+      const pattern =
+        template.toJSON().Resources[ruleLogicalId].Properties.EventPattern;
+      expect(Object.keys(pattern).sort()).toEqual(['detail-type', 'source']);
+    });
+
+    it('targets only the cleanup queue, with the shared dead-letter queue', () => {
+      const { Targets } = template.toJSON().Resources[ruleLogicalId].Properties;
+      expect(Targets).toEqual([
+        {
+          Arn: arnOf(cleanupQueueLogicalId),
+          DeadLetterConfig: { Arn: arnOf(dlqLogicalId) },
+          Id: 'Target0',
+        },
+      ]);
+    });
+
+    it('lets only this rule send to the cleanup queue', () => {
+      const statements = queuePolicyStatements(cleanupQueueLogicalId);
+      expect(statements).toHaveLength(2);
+      expect(statements).toContainEqual({
+        Effect: 'Allow',
+        Principal: { Service: 'events.amazonaws.com' },
+        Action: [
+          'sqs:SendMessage',
+          'sqs:GetQueueAttributes',
+          'sqs:GetQueueUrl',
+        ],
+        Resource: arnOf(cleanupQueueLogicalId),
+        Condition: { ArnEquals: { 'aws:SourceArn': arnOf(ruleLogicalId) } },
+      });
+    });
+
+    it('lets only this rule send to the dead-letter queue', () => {
+      const statements = queuePolicyStatements(dlqLogicalId);
+      expect(statements).toHaveLength(2);
+      expect(statements).toContainEqual(
+        expect.objectContaining({
+          Effect: 'Allow',
+          Principal: { Service: 'events.amazonaws.com' },
+          Action: 'sqs:SendMessage',
+          Resource: arnOf(dlqLogicalId),
+          Condition: { ArnEquals: { 'aws:SourceArn': arnOf(ruleLogicalId) } },
+        }),
+      );
+    });
+
+    it('exports the event bus name and cleanup queue URL', () => {
+      template.hasOutput('EventBusName', { Value: { Ref: busLogicalId } });
+      template.hasOutput('CleanupQueueUrl', {
+        Value: { Ref: cleanupQueueLogicalId },
+      });
+    });
+
+    it('defines no Lambda functions, IAM roles, SNS topics or KMS keys', () => {
+      for (const type of [
+        'AWS::Lambda::Function',
+        'AWS::IAM::Role',
+        'AWS::IAM::Policy',
+        'AWS::IAM::ManagedPolicy',
+        'AWS::SNS::Topic',
+        'AWS::KMS::Key',
+      ]) {
+        template.resourceCountIs(type, 0);
+      }
     });
   });
 
