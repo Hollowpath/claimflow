@@ -751,6 +751,8 @@ The janitor is triggered by the table stream and receives only TTL deletions of 
 
 For each record it reads `receiptId` from the old image and deletes `receipts/<receiptId>` and `uploads/pending/<receiptId>`. Deleting a missing object succeeds, so retries are safe.
 
+`createReceiptJanitorHandler` in `services/api/src/adapters/aws/receipt-janitor-handler.ts` is this handler as a factory over `S3ReceiptObjects`, without a Lambda entry point, client, or event-source mapping. A record is a cleanup candidate when it is a `REMOVE` made by `dynamodb.amazonaws.com` as a `Service`; every candidate needs a sequence number, or the handler throws and Lambda retries the batch. A candidate's `OldImage` is unmarshalled; items that are not pending `Receipt` records are ignored, and a pending receipt is validated strictly by the receipt codec. For each valid one, `deleteFinal` and `deletePending` are both attempted whatever the other does. Records are independent: a missing or malformed image or a failed deletion fails only that record, and the response is `{ batchItemFailures: [] }` or the first failed sequence number in stream order. The only thrown message is fixed and names no value.
+
 ### Upload verification test
 
 Before the AWS receipt adapter is relied on, the opt-in integration suite (section 23) must prove against a real bucket in `ap-southeast-1` that:

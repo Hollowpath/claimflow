@@ -298,6 +298,16 @@ Using DynamoDB stream records built with the real marshaller:
 - empty results returning without publishing, events passed in query order with their event IDs as unique sequence numbers, batches of 1 and 10, and a deterministic result;
 - reported failures turned into one fixed safe error without retrying, and query, clock, and workflow errors propagated unchanged.
 
+## Receipt janitor handler (`services/api/test/receipt-janitor-handler.test.ts`)
+
+Using TTL removal records built with the real marshaller and `S3ReceiptObjects` over a recording S3:
+
+- both the final and the pending object deleted for valid pending receipts, idempotently on retry;
+- inserts, modifies, user removals, other service identities, other entities, and non-pending receipts ignored;
+- malformed pending receipts and missing or unreadable old images failing only their own record;
+- both deletions attempted when either or both fail, other records still processed, and the first failure reported in stream order;
+- a candidate without a sequence number throwing a fixed message before anything is deleted.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
