@@ -159,6 +159,15 @@ Against an in-memory fake table that applies key order, `Limit`, `ExclusiveStart
 - idempotency records before, exactly at, and after `expiresAt`, treated as absent only once expired;
 - malformed items raising `ItemIntegrityError`, invalid current times rejected before reading, and SDK errors propagating unchanged.
 
+## DynamoDB rejection writer (`services/api/test/dynamodb-idempotency-writer.test.ts`)
+
+Against a fake client that applies the approved condition to an existing item:
+
+- the exact `PutCommand` input: the complete encoded rejected record, the condition expression, and the current time;
+- invalid current times, completed records, and records the codec refuses, all rejected before any command, and already-expired records refused;
+- a new record expiring exactly now still written, while an existing record expiring exactly now or later blocks the write and one that expired before now is replaced;
+- `ConditionalCheckFailedException` propagating as the identical object, other SDK errors unchanged, and only `PutCommand` ever sent.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
