@@ -5,8 +5,14 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as nodejs from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
+import { resolve } from 'node:path';
 import type { Construct } from 'constructs';
 
 /** The only AWS Region ClaimFlow is deployed to. */
@@ -50,6 +56,12 @@ export const CLAIMFLOW_CLEANUP_EVENT_TYPES = [
 
 /** A queue message is received at most this often before it is moved to the dead-letter queue. */
 export const CLAIMFLOW_CLEANUP_MAX_RECEIVES = 5;
+export const CLAIMFLOW_CLEANUP_WORKER_NAME = 'claimflow-cleanup-worker';
+export const CLAIMFLOW_CLEANUP_WORKER_TABLE_ENV = 'CLAIMFLOW_TABLE_NAME';
+export const CLAIMFLOW_CLEANUP_WORKER_BUCKET_ENV =
+  'CLAIMFLOW_RECEIPT_BUCKET_NAME';
+
+const repositoryRoot = resolve(__dirname, '../..');
 
 const stringKey = (name: string): dynamodb.Attribute => ({
   name,
@@ -90,6 +102,12 @@ export class ClaimFlowStack extends cdk.Stack {
 
   /** Holds cleanup messages that failed repeatedly, and undeliverable events. */
   public readonly cleanupDeadLetterQueue: sqs.Queue;
+
+  /** Performs the internal cleanup events from the cleanup queue. */
+  public readonly cleanupWorker: nodejs.NodejsFunction;
+
+  /** The cleanup worker's own log group. */
+  public readonly cleanupWorkerLogGroup: logs.LogGroup;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, { description: CLAIMFLOW_STACK_DESCRIPTION, ...props });
@@ -315,5 +333,66 @@ export class ClaimFlowStack extends cdk.Stack {
       description: 'URL of the cleanup worker queue',
       value: this.cleanupQueue.queueUrl,
     });
+
+    // The cleanup worker: bundled from source (the workspaces' `source`
+    // export condition) with the pinned AWS SDK, so no prebuilt `dist` files
+    // are needed. Tracing stays off: it would add an X-Ray permission.
+    this.cleanupWorkerLogGroup = new logs.LogGroup(
+      this,
+      'CleanupWorkerLogGroup',
+      {
+        logGroupName: `/aws/lambda/${CLAIMFLOW_CLEANUP_WORKER_NAME}`,
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      },
+    );
+    const cleanupWorkerRole = new iam.Role(this, 'CleanupWorkerRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+    });
+    this.cleanupWorkerLogGroup.grantWrite(cleanupWorkerRole);
+    this.cleanupQueue.grantConsumeMessages(cleanupWorkerRole);
+    cleanupWorkerRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:Query', 'dynamodb:BatchWriteItem'],
+        resources: [this.table.tableArn],
+      }),
+    );
+    cleanupWorkerRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:DeleteObject'],
+        resources: [this.receiptBucket.arnForObjects('receipts/*')],
+      }),
+    );
+    this.cleanupWorker = new nodejs.NodejsFunction(this, 'CleanupWorker', {
+      functionName: CLAIMFLOW_CLEANUP_WORKER_NAME,
+      entry: resolve(
+        repositoryRoot,
+        'services/api/src/adapters/aws/cleanup-worker-lambda.ts',
+      ),
+      projectRoot: repositoryRoot,
+      depsLockFilePath: resolve(repositoryRoot, 'package-lock.json'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_24_X,
+      architecture: lambda.Architecture.ARM_64,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(60),
+      role: cleanupWorkerRole,
+      logGroup: this.cleanupWorkerLogGroup,
+      environment: {
+        [CLAIMFLOW_CLEANUP_WORKER_TABLE_ENV]: this.table.tableName,
+        [CLAIMFLOW_CLEANUP_WORKER_BUCKET_ENV]: this.receiptBucket.bucketName,
+      },
+      bundling: {
+        externalModules: [],
+        esbuildArgs: { '--conditions': 'source' },
+        forceDockerBundling: false,
+      },
+    });
+    this.cleanupWorker.addEventSource(
+      new lambdaEventSources.SqsEventSource(this.cleanupQueue, {
+        batchSize: 10,
+        reportBatchItemFailures: true,
+      }),
+    );
   }
 }

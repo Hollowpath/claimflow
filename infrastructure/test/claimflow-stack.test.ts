@@ -7,6 +7,7 @@ import {
   CLAIMFLOW_CLEANUP_DLQ_NAME,
   CLAIMFLOW_CLEANUP_EVENT_TYPES,
   CLAIMFLOW_CLEANUP_QUEUE_NAME,
+  CLAIMFLOW_CLEANUP_WORKER_NAME,
   CLAIMFLOW_EVENT_BUS_NAME,
   CLAIMFLOW_EVENT_SOURCE,
   CLAIMFLOW_REGION,
@@ -26,6 +27,11 @@ const EVENT_BUS_TYPE = 'AWS::Events::EventBus';
 const RULE_TYPE = 'AWS::Events::Rule';
 const QUEUE_TYPE = 'AWS::SQS::Queue';
 const QUEUE_POLICY_TYPE = 'AWS::SQS::QueuePolicy';
+const FUNCTION_TYPE = 'AWS::Lambda::Function';
+const MAPPING_TYPE = 'AWS::Lambda::EventSourceMapping';
+const ROLE_TYPE = 'AWS::IAM::Role';
+const IAM_POLICY_TYPE = 'AWS::IAM::Policy';
+const LOG_GROUP_TYPE = 'AWS::Logs::LogGroup';
 
 interface TableResource {
   readonly Properties: Record<string, any>;
@@ -140,6 +146,11 @@ describe('ClaimFlowStack', () => {
           QUEUE_TYPE,
           QUEUE_POLICY_TYPE,
           QUEUE_POLICY_TYPE,
+          FUNCTION_TYPE,
+          MAPPING_TYPE,
+          ROLE_TYPE,
+          IAM_POLICY_TYPE,
+          LOG_GROUP_TYPE,
         ].sort(),
       );
       template.resourceCountIs('AWS::KMS::Key', 0);
@@ -153,15 +164,14 @@ describe('ClaimFlowStack', () => {
       'AWS::Cognito::UserPoolResourceServer',
       'AWS::Cognito::UserPoolUICustomizationAttachment',
       'AWS::Cognito::ManagedLoginBranding',
-      'AWS::Lambda::Function',
-      'AWS::IAM::Role',
       'AWS::ApiGatewayV2::Api',
       'AWS::ApiGateway::RestApi',
       'AWS::SES::EmailIdentity',
       'AWS::IAM::User',
       'AWS::SNS::Topic',
-      'AWS::Lambda::EventSourceMapping',
       'AWS::Lambda::Permission',
+      'AWS::Lambda::LayerVersion',
+      'AWS::IAM::ManagedPolicy',
       'AWS::Events::Archive',
       'AWS::Events::Connection',
       'AWS::Events::ApiDestination',
@@ -777,18 +787,176 @@ describe('ClaimFlowStack', () => {
         Value: { Ref: cleanupQueueLogicalId },
       });
     });
+  });
 
-    it('defines no Lambda functions, IAM roles, SNS topics or KMS keys', () => {
-      for (const type of [
-        'AWS::Lambda::Function',
-        'AWS::IAM::Role',
-        'AWS::IAM::Policy',
-        'AWS::IAM::ManagedPolicy',
-        'AWS::SNS::Topic',
-        'AWS::KMS::Key',
-      ]) {
-        template.resourceCountIs(type, 0);
+  describe('cleanup worker', () => {
+    let functionLogicalId: string;
+    let roleLogicalId: string;
+    let logGroupLogicalId: string;
+    let queueLogicalId: string;
+    let dlqLogicalId: string;
+    let tableId: string;
+
+    const arnOf = (logicalId: string) => ({ 'Fn::GetAtt': [logicalId, 'Arn'] });
+
+    const statements = (): Record<string, any>[] => {
+      const policies = Object.values(template.findResources(IAM_POLICY_TYPE));
+      expect(policies).toHaveLength(1);
+      return (policies[0] as TableResource).Properties.PolicyDocument.Statement;
+    };
+
+    beforeAll(() => {
+      [functionLogicalId] = resourceOf(stack.cleanupWorker);
+      [roleLogicalId] = Object.keys(template.findResources(ROLE_TYPE));
+      [logGroupLogicalId] = resourceOf(stack.cleanupWorkerLogGroup);
+      [queueLogicalId] = resourceOf(stack.cleanupQueue);
+      [dlqLogicalId] = resourceOf(stack.cleanupDeadLetterQueue);
+      [tableId] = Object.keys(template.findResources(TABLE_TYPE));
+    });
+
+    const functionProperties = () =>
+      template.toJSON().Resources[functionLogicalId].Properties;
+
+    it('defines exactly one function, role, policy, log group and mapping', () => {
+      template.resourceCountIs(FUNCTION_TYPE, 1);
+      template.resourceCountIs(ROLE_TYPE, 1);
+      template.resourceCountIs(IAM_POLICY_TYPE, 1);
+      template.resourceCountIs(LOG_GROUP_TYPE, 1);
+      template.resourceCountIs(MAPPING_TYPE, 1);
+      template.resourceCountIs('AWS::Lambda::Permission', 0);
+    });
+
+    it('configures the function', () => {
+      expect(CLAIMFLOW_CLEANUP_WORKER_NAME).toBe('claimflow-cleanup-worker');
+      template.hasResourceProperties(FUNCTION_TYPE, {
+        FunctionName: 'claimflow-cleanup-worker',
+        Runtime: 'nodejs24.x',
+        Architectures: ['arm64'],
+        MemorySize: 256,
+        Timeout: 60,
+        Handler: 'index.handler',
+        Role: arnOf(roleLogicalId),
+        LoggingConfig: { LogGroup: { Ref: logGroupLogicalId } },
+      });
+      const properties = functionProperties();
+      expect(properties).not.toHaveProperty('TracingConfig');
+      expect(properties).not.toHaveProperty('ReservedConcurrentExecutions');
+      expect(properties).not.toHaveProperty('DeadLetterConfig');
+      expect(properties).not.toHaveProperty('Layers');
+    });
+
+    it('passes only the table and receipt bucket names', () => {
+      expect(functionProperties().Environment).toEqual({
+        Variables: {
+          CLAIMFLOW_TABLE_NAME: { Ref: tableId },
+          CLAIMFLOW_RECEIPT_BUCKET_NAME: { Ref: bucketLogicalId },
+        },
+      });
+    });
+
+    it('uses a bundled code asset', () => {
+      const { Code } = functionProperties();
+      expect(Code).toHaveProperty('S3Key');
+      expect(Code).not.toHaveProperty('ZipFile');
+    });
+
+    it('has a dedicated log group with 30 day retention', () => {
+      template.hasResourceProperties(LOG_GROUP_TYPE, {
+        LogGroupName: '/aws/lambda/claimflow-cleanup-worker',
+        RetentionInDays: 30,
+      });
+    });
+
+    it('lets only Lambda assume the role, with no managed policies', () => {
+      const role = template.toJSON().Resources[roleLogicalId].Properties;
+      expect(role.AssumeRolePolicyDocument.Statement).toEqual([
+        {
+          Action: 'sts:AssumeRole',
+          Effect: 'Allow',
+          Principal: { Service: 'lambda.amazonaws.com' },
+        },
+      ]);
+      expect(role).not.toHaveProperty('ManagedPolicyArns');
+      template.hasResourceProperties(IAM_POLICY_TYPE, {
+        Roles: [{ Ref: roleLogicalId }],
+      });
+    });
+
+    it('grants exactly the four scoped permissions', () => {
+      expect(statements()).toEqual([
+        {
+          Effect: 'Allow',
+          Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+          Resource: arnOf(logGroupLogicalId),
+        },
+        {
+          Effect: 'Allow',
+          Action: [
+            'sqs:ReceiveMessage',
+            'sqs:ChangeMessageVisibility',
+            'sqs:GetQueueUrl',
+            'sqs:DeleteMessage',
+            'sqs:GetQueueAttributes',
+          ],
+          Resource: arnOf(queueLogicalId),
+        },
+        {
+          Effect: 'Allow',
+          Action: ['dynamodb:Query', 'dynamodb:BatchWriteItem'],
+          Resource: arnOf(tableId),
+        },
+        {
+          Effect: 'Allow',
+          Action: 's3:DeleteObject',
+          Resource: {
+            'Fn::Join': ['', [arnOf(bucketLogicalId), '/receipts/*']],
+          },
+        },
+      ]);
+    });
+
+    it('grants nothing on indexes, pending objects, the bucket, the dead-letter queue or wildcards', () => {
+      const json = JSON.stringify(statements());
+      expect(json).not.toContain('/index/');
+      expect(json).not.toContain('uploads');
+      expect(json).not.toContain(dlqLogicalId);
+      expect(json).not.toContain('"*"');
+      for (const statement of statements()) {
+        expect(statement).not.toHaveProperty('NotAction');
+        expect(statement).not.toHaveProperty('NotResource');
+        expect(statement.Action).not.toContain('*');
       }
+    });
+
+    it('maps the cleanup queue in batches of 10 with partial failures', () => {
+      template.hasResourceProperties(MAPPING_TYPE, {
+        EventSourceArn: arnOf(queueLogicalId),
+        FunctionName: { Ref: functionLogicalId },
+        BatchSize: 10,
+        FunctionResponseTypes: ['ReportBatchItemFailures'],
+      });
+      const [mapping] = Object.values(
+        template.findResources(MAPPING_TYPE),
+      ) as TableResource[];
+      expect(mapping.Properties).not.toHaveProperty(
+        'MaximumBatchingWindowInSeconds',
+      );
+      expect(mapping.Properties).not.toHaveProperty('ScalingConfig');
+    });
+
+    it('does not consume the dead-letter queue', () => {
+      const sources = Object.values(template.findResources(MAPPING_TYPE)).map(
+        (mapping) => (mapping as TableResource).Properties.EventSourceArn,
+      );
+      expect(sources).toEqual([arnOf(queueLogicalId)]);
+    });
+
+    it('keeps the 6 minute visibility timeout and 5 receive redrive', () => {
+      template.hasResourceProperties(QUEUE_TYPE, {
+        QueueName: 'claimflow-cleanup',
+        VisibilityTimeout: 360,
+        RedrivePolicy: { maxReceiveCount: 5 },
+      });
     });
   });
 

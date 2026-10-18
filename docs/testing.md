@@ -326,6 +326,13 @@ Using SQS records whose bodies are EventBridge events:
 - dependency failures failing only their own record, every failed message ID returned in input order, and successes omitted;
 - a missing or empty message ID throwing a fixed message before any cleanup, and responses that contain only message IDs.
 
+## Cleanup worker Lambda entry point (`services/api/test/cleanup-worker-lambda.test.ts`)
+
+With stubbed environment variables and a fresh module import:
+
+- the module exporting only `handler`, which answers an empty batch without calling AWS;
+- loading failing with a fixed message when the table name or the receipt bucket name is missing or empty.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

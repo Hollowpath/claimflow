@@ -19,6 +19,7 @@ The stack defines these resources:
 | Web hosting: S3 web assets bucket and CloudFront distribution      | Defined and deployed in `ap-southeast-1` |
 | Cognito web app client `ClaimFlowWeb` and classic hosted UI domain | Defined and deployed in `ap-southeast-1` |
 | EventBridge bus `claimflow`, cleanup queue and dead-letter queue   | Defined and deployed in `ap-southeast-1` |
+| Cleanup worker Lambda, its role, log group and queue mapping       | Defined and deployed in `ap-southeast-1` |
 
 ### DynamoDB table `ClaimFlow`
 
@@ -159,7 +160,7 @@ The OAC read grant is added to the web assets bucket's `AWS::S3::BucketPolicy`, 
 
 ### Cleanup event delivery
 
-The stack defines the internal cleanup-event path (section 15 of the architecture document). These resources are defined and deployed in `ap-southeast-1`, but nothing publishes to them or consumes from them yet because the Lambda functions and event-source mapping do not exist.
+The stack defines the internal cleanup-event path (section 15 of the architecture document). These resources are defined and deployed in `ap-southeast-1`, and the cleanup worker below consumes from the cleanup queue. Nothing currently publishes application events to the bus, so the cleanup path is deployed but will remain idle until the publisher exists.
 
 - A custom EventBridge bus named `claimflow` (`eventBus` on the stack).
 - A standard SQS queue `claimflow-cleanup` (`cleanupQueue`): SQS-managed encryption, TLS enforced, 4-day retention, a 6-minute visibility timeout, and redrive to the dead-letter queue after 5 receives.
@@ -167,6 +168,16 @@ The stack defines the internal cleanup-event path (section 15 of the architectur
 - An EventBridge rule `claimflow-cleanup` on the bus that matches source `claimflow.api` and detail types `internal.receipt-object-deletion-requested` and `internal.claim-history-purge-requested` only. It targets the cleanup queue, with the dead-letter queue as the target's delivery dead-letter queue.
 
 CDK generates the queue resource policies: TLS enforcement on both queues, and a statement allowing only this rule to send to each queue. There are no IAM roles, customer-managed KMS keys, or SNS topics.
+
+### Cleanup worker
+
+The stack defines the cleanup worker (section 12 of the architecture document). It is defined and deployed in `ap-southeast-1`, together with the bus, rule, and queues above.
+
+- Function `claimflow-cleanup-worker` (`cleanupWorker` on the stack): Node.js 24, ARM64, 256 MB, 60-second timeout, tracing disabled. The entry point is `services/api/src/adapters/aws/cleanup-worker-lambda.ts`; its environment holds `CLAIMFLOW_TABLE_NAME` and `CLAIMFLOW_RECEIPT_BUCKET_NAME`.
+- The code is bundled by `NodejsFunction` with the pinned `esbuild` development dependency, using the `source` export condition of the workspaces (no `dist` files needed) and bundling the pinned AWS SDK. Synthesizing, including the tests, therefore runs esbuild locally; no Docker is needed.
+- Log group `/aws/lambda/claimflow-cleanup-worker` (`cleanupWorkerLogGroup`) with 30-day retention.
+- The function's own execution role allows only: log writes to that log group; SQS consumption of `claimflow-cleanup`; `dynamodb:Query` and `dynamodb:BatchWriteItem` on the table ARN, without its indexes; and `s3:DeleteObject` on `receipts/*` in the receipt bucket, without pending uploads or the bucket itself.
+- An event-source mapping from `claimflow-cleanup`: batch size 10, no batching window, partial batch failure reporting. The queue's six-minute visibility timeout and redrive after five receives are unchanged, and the dead-letter queue is not an event source.
 
 ### Outputs
 
@@ -180,13 +191,13 @@ CDK generates the queue resource policies: TLS enforcement on both queues, and a
 | `EventBusName`              | The name of the `claimflow` event bus                                  |
 | `CleanupQueueUrl`           | The URL of the cleanup queue                                           |
 
-Apart from the CloudFront read grant on the web assets bucket, the stack grants no IAM permissions and contains no Lambda functions, API Gateway resources, or other resources yet. The queue policies above are generated resource policies, not IAM roles.
+Apart from the CloudFront read grant on the web assets bucket and the cleanup worker role, the stack grants no IAM permissions and contains no other Lambda functions, API Gateway resources, or other resources yet. The queue policies above are generated resource policies, not IAM roles.
 
 ## Useful commands
 
 - `npm run build` type-check the project
 - `npm run watch` watch for changes and type-check
-- `npm run test` run the Vitest unit tests, which synthesize the stack locally
+- `npm run test` run the Vitest unit tests, which synthesize the stack locally and bundle the cleanup worker with esbuild
 - `npx cdk synth` emit the synthesized CloudFormation template
 - `npx cdk diff` compare the deployed stack with the current state
 
