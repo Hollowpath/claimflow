@@ -275,6 +275,13 @@ Against a fake client that applies the approved condition to an existing item:
 - batches of 1 and 10 accepted, and empty, oversized, and invalid batches and bus names rejected before any command;
 - the SDK result, including failed entries, returned unchanged, and SDK errors propagated unchanged without a retry.
 
+## Outbox publication workflow (`services/api/test/outbox-publication.test.ts`)
+
+- missing and already published items skipped, duplicate delivery as a no-op, no EventBridge call when nothing is pending, and the stored event published in batch order;
+- results matched by index, successful entries marked once with one clock time, and failed or ambiguous entries never marked;
+- partial and whole-call failures, unreliable EventBridge results treated as failures, read and mark failures, and conditional-check races ignored by error name only;
+- the first failure chosen in batch order, no operational error thrown, and invalid batches or sequence numbers rejected before any read.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
