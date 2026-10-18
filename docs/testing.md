@@ -250,6 +250,13 @@ Against a fake client that applies the approved condition to an existing item:
 - invalid IDs, trace IDs, timestamps, versions, and object keys rejected, version boundaries accepted, and fixed errors that never echo values;
 - both events accepted by the outbox codec and composed with a draft deletion by the transaction composer.
 
+## Category events (`services/api/test/category-events.test.ts`)
+
+- the exact creation, policy, activation, deactivation, and deletion events, policy payloads limited to the fields that changed, and no event for a name-only change;
+- a combined update producing both events in a fixed order at the same version with distinct IDs, and no category name in any event;
+- version, creation-time, previous-event-version, ID, and timestamp validation with boundaries, and fixed errors that never echo values;
+- every event accepted by the outbox codec, and use with the category operation builders and the transaction composer, including `lastEventVersion` recorded only when an event is published.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

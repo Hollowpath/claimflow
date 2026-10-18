@@ -72,6 +72,7 @@ export function updateCategoryOperation(
   tableName: string,
   category: Category,
   expectedVersion: number,
+  publishesEvent: boolean,
 ): TransactionItem {
   checkTable(tableName);
   checkVersion(expectedVersion, 'expectedVersion');
@@ -85,40 +86,46 @@ export function updateCategoryOperation(
     claimCount: 0,
     lastEventVersion: category.version,
   });
+  // Only a mutation that publishes an event records it as the latest one.
+  const names: Record<string, string> = {
+    '#name': 'name',
+    '#active': 'active',
+    '#currency': 'currency',
+    '#maxAmountMinor': 'maxAmountMinor',
+    '#receiptRequiredAboveMinor': 'receiptRequiredAboveMinor',
+    '#version': 'version',
+    '#updatedAt': 'updatedAt',
+    '#updatedBy': 'updatedBy',
+  };
+  const values: Record<string, unknown> = {
+    ':name': category.name,
+    ':active': category.active,
+    ':currency': category.currency,
+    ':maxAmountMinor': category.maxAmountMinor,
+    ':receiptRequiredAboveMinor': category.receiptRequiredAboveMinor,
+    ':version': category.version,
+    ':updatedAt': category.updatedAt,
+    ':updatedBy': category.updatedBy,
+    ':expectedVersion': expectedVersion,
+  };
+  let assignments =
+    'SET #name = :name, #active = :active, #currency = :currency, ' +
+    '#maxAmountMinor = :maxAmountMinor, ' +
+    '#receiptRequiredAboveMinor = :receiptRequiredAboveMinor, ' +
+    '#version = :version, #updatedAt = :updatedAt, #updatedBy = :updatedBy';
+  if (publishesEvent) {
+    assignments += ', #lastEventVersion = :lastEventVersion';
+    names['#lastEventVersion'] = 'lastEventVersion';
+    values[':lastEventVersion'] = category.version;
+  }
   return {
     Update: {
       TableName: tableName,
       Key: categoryKey(category.categoryId),
-      UpdateExpression:
-        'SET #name = :name, #active = :active, #currency = :currency, ' +
-        '#maxAmountMinor = :maxAmountMinor, ' +
-        '#receiptRequiredAboveMinor = :receiptRequiredAboveMinor, ' +
-        '#version = :version, #updatedAt = :updatedAt, ' +
-        '#updatedBy = :updatedBy, #lastEventVersion = :lastEventVersion',
+      UpdateExpression: assignments,
       ConditionExpression: categoryVersionCondition,
-      ExpressionAttributeNames: {
-        '#name': 'name',
-        '#active': 'active',
-        '#currency': 'currency',
-        '#maxAmountMinor': 'maxAmountMinor',
-        '#receiptRequiredAboveMinor': 'receiptRequiredAboveMinor',
-        '#version': 'version',
-        '#updatedAt': 'updatedAt',
-        '#updatedBy': 'updatedBy',
-        '#lastEventVersion': 'lastEventVersion',
-      },
-      ExpressionAttributeValues: {
-        ':name': category.name,
-        ':active': category.active,
-        ':currency': category.currency,
-        ':maxAmountMinor': category.maxAmountMinor,
-        ':receiptRequiredAboveMinor': category.receiptRequiredAboveMinor,
-        ':version': category.version,
-        ':updatedAt': category.updatedAt,
-        ':updatedBy': category.updatedBy,
-        ':lastEventVersion': category.version,
-        ':expectedVersion': expectedVersion,
-      },
+      ExpressionAttributeNames: names,
+      ExpressionAttributeValues: values,
     },
   };
 }

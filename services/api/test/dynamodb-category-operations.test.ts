@@ -59,6 +59,13 @@ const updated: Category = {
   updatedBy: 'sub-erin',
 };
 
+/** An update that publishes an event, as most do. */
+const updateWithEvent = (
+  table: string,
+  category: Category,
+  expectedVersion: number,
+) => updateCategoryOperation(table, category, expectedVersion, true);
+
 const guard: CategoryGuard = {
   categoryId: 'travel',
   readVersion: 3,
@@ -129,8 +136,37 @@ describe('create', () => {
 });
 
 describe('update', () => {
+  it('records lastEventVersion only when the update publishes an event', () => {
+    const silent = updateCategoryOperation(
+      tableName,
+      updated,
+      3,
+      false,
+    ).Update!;
+    const published = updateCategoryOperation(
+      tableName,
+      updated,
+      3,
+      true,
+    ).Update!;
+
+    expect(silent.UpdateExpression).not.toContain('lastEventVersion');
+    expect(silent.ExpressionAttributeNames).not.toHaveProperty(
+      '#lastEventVersion',
+    );
+    expect(silent.ExpressionAttributeValues).not.toHaveProperty(
+      ':lastEventVersion',
+    );
+    expect(silent.UpdateExpression).toContain('#version = :version');
+    expect(silent.ConditionExpression).toBe('#version = :expectedVersion');
+    expect(published.UpdateExpression).toContain(
+      '#lastEventVersion = :lastEventVersion',
+    );
+    expect(published.ExpressionAttributeValues![':lastEventVersion']).toBe(4);
+  });
+
   it('sets every mutable field and the version, conditioned on the expected version', () => {
-    expect(updateCategoryOperation(tableName, updated, 3)).toEqual({
+    expect(updateWithEvent(tableName, updated, 3)).toEqual({
       Update: {
         TableName: 'ClaimFlow',
         Key: key,
@@ -170,9 +206,7 @@ describe('update', () => {
   });
 
   it('never sets claimCount, createdAt, keys, identity, or indexes', () => {
-    const touched = touchedAttributes(
-      updateCategoryOperation(tableName, updated, 3),
-    );
+    const touched = touchedAttributes(updateWithEvent(tableName, updated, 3));
 
     for (const preserved of [
       'claimCount',
@@ -206,11 +240,7 @@ describe('update', () => {
     ['an older version', 3, 2],
   ])('refuses %s', (_name, expectedVersion, version) => {
     expect(() =>
-      updateCategoryOperation(
-        tableName,
-        { ...updated, version },
-        expectedVersion,
-      ),
+      updateWithEvent(tableName, { ...updated, version }, expectedVersion),
     ).toThrow('one more than expectedVersion');
   });
 
@@ -218,11 +248,11 @@ describe('update', () => {
     const max = Number.MAX_SAFE_INTEGER;
 
     expect(
-      updateCategoryOperation(tableName, { ...updated, version: max }, max - 1)
-        .Update!.ExpressionAttributeValues,
+      updateWithEvent(tableName, { ...updated, version: max }, max - 1).Update!
+        .ExpressionAttributeValues,
     ).toMatchObject({ ':version': max, ':expectedVersion': max - 1 });
     expect(() =>
-      updateCategoryOperation(tableName, { ...updated, version: max + 1 }, max),
+      updateWithEvent(tableName, { ...updated, version: max + 1 }, max),
     ).toThrow();
   });
 
@@ -230,7 +260,7 @@ describe('update', () => {
     'refuses an expected version of %s',
     (expectedVersion) => {
       expect(() =>
-        updateCategoryOperation(tableName, updated, expectedVersion),
+        updateWithEvent(tableName, updated, expectedVersion),
       ).toThrow(CategoryOperationError);
     },
   );
@@ -242,7 +272,7 @@ describe('update', () => {
     ['an invalid updater', { updatedBy: 'sub erin' }],
   ])('refuses %s through the codec', (_name, change) => {
     expect(() =>
-      updateCategoryOperation(tableName, { ...updated, ...change }, 3),
+      updateWithEvent(tableName, { ...updated, ...change }, 3),
     ).toThrow(ItemEncodingError);
   });
 });
@@ -377,7 +407,7 @@ describe('category guard check', () => {
 describe('every builder', () => {
   const all = (): TransactionItem[] => [
     createCategoryOperation(tableName, created),
-    updateCategoryOperation(tableName, updated, 3),
+    updateWithEvent(tableName, updated, 3),
     deleteCategoryOperation(tableName, 'travel', 4),
     incrementClaimCountOperation(tableName, guard),
     decrementClaimCountOperation(tableName, 'travel'),
