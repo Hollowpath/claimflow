@@ -84,6 +84,16 @@ The `get`/`getMany` directory port and the development-only user catalogue, with
 - claim, page, history, and receipt presentation request only the employees, assigned managers, and history actors shown, in one call;
 - local session descriptions list the development users, while signed-in descriptions never use the catalogue, which may be absent.
 
+## DynamoDB user directory (`services/api/test/dynamodb-user-directory.test.ts`)
+
+The AWS `UserDirectory` adapter against an in-memory fake document client, with no AWS access and no real waiting between retries:
+
+- `get`: one strongly consistent `GetItem` on `USER#<id>` / `PROFILE`, profiles with and without a manager, and missing profiles;
+- rejection of malformed stored items: wrong keys or entity type, empty names or titles, roles that are not a list of known roles, and empty or non-string manager IDs, without revealing stored values;
+- `getMany`: no command for an empty list, deduplicated eventually consistent `BatchGetItem` calls of at most 100 keys, unordered and missing responses, and unrequested profiles;
+- unprocessed keys retried with exponential, capped backoff, and a clear failure after the attempt limit;
+- only `GetItem` and `BatchGetItem` are ever sent, and the real document client satisfies the adapter's client type.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
