@@ -1,6 +1,6 @@
 # AWS architecture
 
-This document defines the approved target architecture for running ClaimFlow on AWS. The architecture is being implemented in increments. The TypeScript CDK application exists in `infrastructure/`. The `ClaimFlow` DynamoDB table, the `ClaimFlow` Cognito User Pool, and the receipt bucket are defined and deployed in `ap-southeast-1`; the application is not connected to any of them yet. All other components, including the application's AWS adapters, are future increments (see section 4).
+This document defines the approved target architecture for running ClaimFlow on AWS. The architecture is being implemented in increments. The TypeScript CDK application exists in `infrastructure/`. The `ClaimFlow` DynamoDB table, the `ClaimFlow` Cognito User Pool, and the receipt bucket, and web hosting are defined and deployed in `ap-southeast-1`; the application is not connected to any of them yet, and no built web application files are uploaded. All other components, including the application's AWS adapters, are future increments (see section 4).
 
 The document distinguishes three things throughout:
 
@@ -43,7 +43,7 @@ The document distinguishes three things throughout:
 - **Adapters, not rewrites.** The domain rules are unchanged and the application services keep their responsibilities. AWS support is added through new implementations of the ports, and the local runtime remains the default for development.
 - **One atomic commit per mutation.** Every accepted change, its audit history, its outbox events, and its idempotency result commit together or not at all.
 - **The server decides.** Identity, roles, ownership, manager assignment, and status are always loaded on the server. Request bodies never carry identity.
-- **Serverless only.** API Gateway, Lambda, DynamoDB, S3, Cognito, EventBridge, and SQS. No VPC, NAT gateway, EC2, ECS, RDS, OpenSearch, or Step Functions.
+- **Serverless only.** API Gateway, Lambda, DynamoDB, S3, CloudFront, Cognito, EventBridge, and SQS. No VPC, NAT gateway, EC2, ECS, RDS, OpenSearch, or Step Functions.
 
 ## 2. Current local implementation
 
@@ -78,6 +78,7 @@ The complete rules are in [domain-model.md](domain-model.md). The parts that sha
 | Identity         | Cognito user pool                                               | Authenticates users; administrators create users (no self sign-up)               |
 | Data             | One DynamoDB table, `ClaimFlow`, on-demand capacity             | Claims, history, categories, profiles, receipt metadata, idempotency, outbox     |
 | Receipt files    | One private S3 bucket                                           | Pending uploads and final receipt copies                                         |
+| Web hosting      | A separate private S3 bucket behind CloudFront                  | Serves the built React web application over HTTPS                                |
 | Change stream    | DynamoDB Streams, `NEW_AND_OLD_IMAGES`                          | Feeds the outbox publisher and the receipt janitor                               |
 | Outbox publisher | Lambda (stream trigger)                                         | Publishes new outbox events to EventBridge and marks them published              |
 | Outbox sweeper   | Lambda (EventBridge schedule, every 15 minutes)                 | Republishes events still pending after the stream path failed or expired         |
@@ -88,17 +89,26 @@ The complete rules are in [domain-model.md](domain-model.md). The parts that sha
 ### Deployment boundary
 
 - Infrastructure is defined with AWS CDK in TypeScript in the `infrastructure/` workspace, as one stack (`ClaimFlowStack`, stack ID `ClaimFlow`).
-- Defined in the stack and deployed in `ap-southeast-1`: the `ClaimFlow` DynamoDB table (section 5), the `ClaimFlow` Cognito User Pool (section 17) without an app client, and the receipt bucket (section 11) without CORS rules until the web origin is decided.
+- Defined in the stack and deployed in `ap-southeast-1`: the `ClaimFlow` DynamoDB table (section 5), the `ClaimFlow` Cognito User Pool (section 17) without an app client, and the receipt bucket (section 11) without CORS rules yet.
+- Defined in the stack and deployed in `ap-southeast-1`: web hosting (the web assets bucket and the CloudFront distribution, described below). No built web application files are uploaded yet, so the application is not available through CloudFront.
 - The application is not connected to this infrastructure yet: it still runs locally with development sign-in and local adapters, so receipt uploads do not reach the bucket.
-- All other approved components remain future increments: the API and its Lambda function, the Cognito app client, the event bus, the publisher, sweeper, janitor, and cleanup functions, and their queues.
+- All other approved components remain future increments: the API and its Lambda function, the Cognito app client, the receipt bucket's CORS rules, the event bus, the publisher, sweeper, janitor, and cleanup functions, and their queues.
 - Phase 0 produced this design only; infrastructure is added in separate, reviewed increments.
 - Deployment is manual. It must never run automatically, including from CI, without explicit authorization.
 
 ### Web application hosting
 
-Hosting the React web application on AWS is **deferred and unresolved**. The approved architecture covers the API, data, receipt storage, identity, and events; it does not include a hosting service for the web application. Today the web application runs locally, either from the Vite development server or as built files served by the local API.
+The built React web application is hosted as static files in a private S3 bucket behind a CloudFront distribution (decision D15 in section 25):
 
-The hosting decision also determines the web origin used in the receipt bucket's CORS rules and the Cognito User Pool sign-in callback URLs. It is recorded as an open decision in section 25.
+- **Web assets bucket:** separate from the receipt bucket; all public access blocked, S3 managed encryption, a bucket policy that denies non-TLS requests, no S3 website hosting, and a `RETAIN` removal policy without automatic object deletion.
+- **Origin access:** CloudFront reads the bucket through Origin Access Control (OAC), signing every request with SigV4. The bucket policy allows only `s3:GetObject`, only for the `cloudfront.amazonaws.com` service principal, and only for requests from this distribution. There is no origin access identity and no public object access.
+- **Viewer access:** HTTP requests are redirected to HTTPS; only `GET` and `HEAD` are allowed, with the managed caching-optimized cache policy.
+- **Client-side routes:** `index.html` is the default root object. Because CloudFront has no permission to list the bucket, S3 answers a missing key with `403` rather than `404`; both are answered with `/index.html` and status `200`, so that React `BrowserRouter` routes such as `/claims/<id>` load the application, which then resolves the route.
+- **Domain:** the distribution's default `*.cloudfront.net` domain with CloudFront's default certificate. A custom domain is deferred (section 24).
+
+The distribution's HTTPS origin is the web origin for the receipt bucket's CORS rules and the Cognito app client's callback URLs. Both are added in later increments, when the application is connected to them.
+
+Publishing the built web application to the bucket, and how the web application reaches the HTTP API from the CloudFront origin, are decided in later increments. Locally, the web application still runs from the Vite development server or as built files served by the local API.
 
 ## 5. DynamoDB table, keys, and indexes
 
@@ -937,7 +947,8 @@ The design uses a Cognito User Pool for authentication only. It does not use or 
 - **Application:** every operation loads the actor from the profile and applies the domain authorization rules; inaccessible claims return `404`.
 - **Data:** conditional writes repeat the ownership and assignment checks inside the transaction.
 - **Least privilege:** each function has its own IAM role, limited to the table, indexes, bucket prefixes, bus, and queues it uses. The API function cannot read the stream; the janitor can only delete receipt objects; the cleanup worker can only delete history items and receipt objects.
-- **Receipt bucket:** all public access blocked, a bucket policy that denies non-TLS requests, server-side encryption, and CORS limited to `POST` from the web application's origin (fixed by the deferred hosting decision). Upload POST policies are valid for 15 minutes and restricted to one key, the exact declared size, the declared content type, and the declared SHA-256 checksum; download URLs are valid for 5 minutes.
+- **Receipt bucket:** all public access blocked, a bucket policy that denies non-TLS requests, server-side encryption, and CORS limited to `POST` from the web application's origin (the CloudFront distribution's HTTPS origin, section 4). Upload POST policies are valid for 15 minutes and restricted to one key, the exact declared size, the declared content type, and the declared SHA-256 checksum; download URLs are valid for 5 minutes.
+- **Web hosting:** the web assets bucket is private and readable only by the ClaimFlow CloudFront distribution through Origin Access Control; viewers are redirected to HTTPS. The bucket holds only the built web application, never user data.
 - **Encryption:** DynamoDB, S3, SQS, and CloudWatch Logs encrypted at rest; TLS in transit.
 - **Event bus:** no free text in payloads; consumers fetch details through the authorized API.
 - **History immutability:** IAM cannot restrict updates by sort key, so immutability relies on code that never updates history items, the `attribute_not_exists` condition on every history Put, and point-in-time recovery.
@@ -958,13 +969,14 @@ The design uses a Cognito User Pool for authentication only. It does not use or 
 - **No always-on compute.** Lambda, API Gateway, DynamoDB on-demand requests, EventBridge, and SQS are billed per use.
 - **Charges without request traffic.** Some costs continue even when nobody uses the application, and may be low but are not zero:
   - DynamoDB storage and point-in-time recovery;
-  - S3 storage for receipts;
+  - S3 storage for receipts and the built web application;
   - CloudWatch Logs storage, metrics, and alarms;
   - retained data in general, including history, profiles, and outbox items within their retention periods;
   - the outbox sweeper's scheduled invocations every 15 minutes.
 - **Writes.** Transactional writes cost twice a standard write, and each claim write also updates up to four index entries and usually one outbox item.
 - **Lambda.** Functions run on arm64. Stream reads by Lambda triggers are not billed separately, and records removed by event filters do not invoke functions.
 - **API.** HTTP API is used instead of REST API for its lower request price.
+- **Web hosting.** CloudFront is billed per request and per byte transferred, with no fixed charge for the distribution; the default `*.cloudfront.net` domain avoids certificate and DNS costs.
 - **Retention.** Every log group has a retention period (for example 30 days), and the S3 lifecycle rule and TTL keep abandoned uploads, idempotency records, and published outbox items from accumulating.
 
 ## 22. Operations
@@ -1001,8 +1013,8 @@ These are recorded for later and are **not** part of the approved design.
 - **Sharding GSI4 partitions:** splitting `CLAIM` or `OUTBOX#PENDING` across several partition values if write volume ever approaches a single partition's limit.
 - **Strict per-claim event ordering:** a dedicated design for a future consumer that requires it, for example buffering by `previousEventVersion` or reading the authoritative claim state when an event arrives.
 - **Customer-managed KMS keys:** if a compliance requirement calls for them; the approved design uses AWS-managed encryption.
-- **Web application hosting on AWS:** unresolved; see section 4 and the open decisions in section 25.
-- **Remaining infrastructure:** every approved component beyond the DynamoDB table, the Cognito User Pool, and the receipt bucket is a future increment, defined in the CDK application and deployed manually (section 4).
+- **Custom web domain:** an alternate domain name for the CloudFront distribution, with an ACM certificate in `us-east-1` and DNS records; the default `*.cloudfront.net` domain is used until then.
+- **Remaining infrastructure:** every approved component beyond the DynamoDB table, the Cognito User Pool, the receipt bucket, and web hosting is a future increment, defined in the CDK application and deployed manually (section 4).
 
 ## 25. Decisions
 
@@ -1026,26 +1038,26 @@ All decisions below are approved.
 | D12 | Recovery from cancelled transactions by strongly rereading the idempotency record and conditioned items, without per-item cancellation reasons                                                                   | Approved |
 | D13 | Deterministic `ClientRequestToken` derived from the canonical transaction payload; ambiguous failures resolved through the idempotency record and identical retries with the same token                          | Approved |
 | D14 | Receipt attachment requires `PENDING` metadata only; committed attachments are retried only through idempotent replay                                                                                            | Approved |
+| D15 | Web hosting: the built React application in a separate private S3 bucket behind CloudFront with Origin Access Control, HTTPS redirection, and `/index.html` served for missing paths                             | Approved |
 
 ### Open decisions
 
-| Decision                       | Status                                                                                  |
-| ------------------------------ | --------------------------------------------------------------------------------------- |
-| Web application hosting on AWS | Unresolved; deferred to deployment planning. No hosting service is part of this design. |
+None. Web application hosting, previously open, is settled by D15.
 
 ### Settled architecture choices
 
-| Choice                | Outcome                                                                                                                                                               |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| AWS Region            | `ap-southeast-1`                                                                                                                                                      |
-| API compute           | One API Lambda function behind an HTTP API                                                                                                                            |
-| Identity              | Cognito User Pool with API Gateway JWT authorization; administrator-created users; roles and manager in DynamoDB profiles; no Cognito Identity Pool                   |
-| Receipt upload        | Presigned S3 POST policy with exact `content-length-range` and SHA-256 checksum conditions                                                                            |
-| Infrastructure        | AWS CDK in TypeScript (`infrastructure/`); the DynamoDB table, the Cognito User Pool, and the receipt bucket are deployed, and other components are future increments |
-| Data model            | Single DynamoDB table with GSI1–GSI4; GSI4 also holds pending outbox items                                                                                            |
-| Stream                | `NEW_AND_OLD_IMAGES`                                                                                                                                                  |
-| Write model           | One transaction per mutation, including history, outbox events, and the idempotency result                                                                            |
-| Event publication     | Stream publisher Lambda to EventBridge, with the scheduled sweeper for recovery                                                                                       |
-| Event identifiers     | Existing `IdGenerator`; outbox sort key `OUTBOX#<occurredAt>#<eventId>`                                                                                               |
-| Draft history cleanup | All history purged by the cleanup worker after the deletion transaction                                                                                               |
-| Local runtime         | Kept as the default development runtime, with adapters matching the new port semantics                                                                                |
+| Choice                | Outcome                                                                                                                                                                                |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AWS Region            | `ap-southeast-1`                                                                                                                                                                       |
+| API compute           | One API Lambda function behind an HTTP API                                                                                                                                             |
+| Identity              | Cognito User Pool with API Gateway JWT authorization; administrator-created users; roles and manager in DynamoDB profiles; no Cognito Identity Pool                                    |
+| Receipt upload        | Presigned S3 POST policy with exact `content-length-range` and SHA-256 checksum conditions                                                                                             |
+| Web hosting           | Private S3 bucket behind CloudFront with Origin Access Control; default `*.cloudfront.net` domain                                                                                      |
+| Infrastructure        | AWS CDK in TypeScript (`infrastructure/`); the DynamoDB table, the Cognito User Pool, and the receipt bucket, and web hosting are deployed, and other components are future increments |
+| Data model            | Single DynamoDB table with GSI1–GSI4; GSI4 also holds pending outbox items                                                                                                             |
+| Stream                | `NEW_AND_OLD_IMAGES`                                                                                                                                                                   |
+| Write model           | One transaction per mutation, including history, outbox events, and the idempotency result                                                                                             |
+| Event publication     | Stream publisher Lambda to EventBridge, with the scheduled sweeper for recovery                                                                                                        |
+| Event identifiers     | Existing `IdGenerator`; outbox sort key `OUTBOX#<occurredAt>#<eventId>`                                                                                                                |
+| Draft history cleanup | All history purged by the cleanup worker after the deletion transaction                                                                                                                |
+| Local runtime         | Kept as the default development runtime, with adapters matching the new port semantics                                                                                                 |

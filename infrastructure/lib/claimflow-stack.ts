@@ -1,4 +1,6 @@
 import * as cdk from 'aws-cdk-lib/core';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -37,6 +39,12 @@ export class ClaimFlowStack extends cdk.Stack {
 
   /** Private storage for pending uploads and attached receipt files. */
   public readonly receiptBucket: s3.Bucket;
+
+  /** Private storage for the built web application, read only by CloudFront. */
+  public readonly webAssetsBucket: s3.Bucket;
+
+  /** Serves the web application over HTTPS from the web assets bucket. */
+  public readonly webDistribution: cloudfront.Distribution;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, { description: CLAIMFLOW_STACK_DESCRIPTION, ...props });
@@ -103,6 +111,58 @@ export class ClaimFlowStack extends cdk.Stack {
           expiration: cdk.Duration.days(1),
         },
       ],
+    });
+
+    // Separate from the receipt bucket. CloudFront reads it through Origin
+    // Access Control; S3 website hosting stays off.
+    this.webAssetsBucket = new s3.Bucket(this, 'WebAssetsBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      versioned: false,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      autoDeleteObjects: false,
+    });
+
+    // The bucket grants CloudFront s3:GetObject only, so S3 answers a missing
+    // key with 403 rather than 404. Both are served as index.html with 200 so
+    // that BrowserRouter can resolve client-side routes.
+    const spaFallback = (httpStatus: number): cloudfront.ErrorResponse => ({
+      httpStatus,
+      responseHttpStatus: 200,
+      responsePagePath: '/index.html',
+    });
+
+    this.webDistribution = new cloudfront.Distribution(
+      this,
+      'WebDistribution',
+      {
+        comment: 'ClaimFlow web application',
+        defaultBehavior: {
+          origin: origins.S3BucketOrigin.withOriginAccessControl(
+            this.webAssetsBucket,
+          ),
+          viewerProtocolPolicy:
+            cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+          cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+        },
+        defaultRootObject: 'index.html',
+        errorResponses: [spaFallback(403), spaFallback(404)],
+      },
+    );
+
+    new cdk.CfnOutput(this, 'WebUrl', {
+      description: 'HTTPS URL of the web application',
+      value: `https://${this.webDistribution.distributionDomainName}`,
+    });
+    new cdk.CfnOutput(this, 'WebDistributionDomainName', {
+      description: 'CloudFront domain name of the web application',
+      value: this.webDistribution.distributionDomainName,
+    });
+    new cdk.CfnOutput(this, 'WebAssetsBucketName', {
+      description: 'S3 bucket that holds the built web application',
+      value: this.webAssetsBucket.bucketName,
     });
   }
 }
