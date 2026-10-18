@@ -192,6 +192,15 @@ Against a fake client that applies the approved condition to an existing item:
 - refused mismatched IDs, versions, statuses, and transitions, `CREATE` or unknown actions, invalid or overflowing versions, and deletes of submitted, reopened, or foreign drafts;
 - use with category operations and the transaction composer, no free text in keys, conditions, or errors, and no DynamoDB command sent.
 
+## DynamoDB receipt operations (`services/api/test/dynamodb-receipt-operations.test.ts`)
+
+- the exact pending `Put`, attach `Update`, and `REPLACED` and `REMOVED` `Update` inputs and their exported conditions;
+- applying each `Update` to the stored item yields exactly the codec-encoded new record: declared values and TTL removed on attachment, and only state and TTL changed on retirement;
+- the 24-hour pending and 30-day retired TTLs, every content type, and size boundaries;
+- refused mismatched receipts, owners, file names, upload times, measurements (including each measured value that differs from its declaration), and claims, and invalid actors, states, timestamps, and TTLs;
+- uploads, attachments, replacements, removals, and draft deletions composed with claim and category operations without duplicate targets;
+- no file names in keys, conditions, or errors, and no DynamoDB or S3 command sent.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

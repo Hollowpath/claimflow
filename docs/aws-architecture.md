@@ -553,6 +553,14 @@ The condition texts are exported constants. Guards must require an active catego
 - **Conditions:** owner actions (edit, receipt changes, submit, reopen) require `#version = :expectedVersion AND #employeeId = :actorId`; review actions (start review, approve, reject) require the assigned manager instead. Marking paid requires only the version, because the administrator role is checked by the application.
 - **Delete draft:** a `Delete` of an owned draft that was never submitted, at its current version, with the condition in the table above. History is purged afterwards by the cleanup worker (section 12).
 
+**Receipt operation builders.** `services/api/src/adapters/aws/dynamodb-receipt-operations.ts` builds the receipt metadata operations, without sending DynamoDB or S3 commands. Every record is validated by the receipt codec.
+
+- **Create:** `Put` of the codec-encoded `PENDING` item, conditioned on `attribute_not_exists(PK)`; the codec fixes the 24-hour TTL and the pending object key.
+- **Attach:** an `Update` from `PENDING` to `ATTACHED` that sets the measured values, `attachedClaimId`, and `objectKey = receipts/<receiptId>`, and removes the `declared*` attributes and `expiresAt`. Both records must describe the same receipt, owner, file name, and upload time, the measured type, size, and checksum must equal the declared ones, and the actor must be the owner. Condition: `ownerId = :actorId AND #state = :pending`.
+- **Replace or remove:** an `Update` from `ATTACHED` to `REPLACED` or `REMOVED` that sets only the state and an `expiresAt` exactly 30 days after the change. The records must otherwise be identical, including the measured values and claim, and the change time must be canonical and not before the upload. Condition: `#state = :attached AND attachedClaimId = :claimId`.
+
+Cleanup events for replaced and removed objects are passed to the transaction envelope with these operations.
+
 **When recovery finds that the category changed** (section 10), the service runs the category decision once more with the reread category, within the same request and idempotency key; nothing was committed. A deactivated category or a lowered limit then produces the normal `400 VALIDATION_FAILED`. If the category changes again before the second commit, the request returns `409 VERSION_CONFLICT`.
 
 ## 10. Idempotency
