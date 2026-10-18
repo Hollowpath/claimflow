@@ -520,6 +520,17 @@ describe('categories', () => {
 });
 
 describe('receipts', () => {
+  it('serves a receipt with its inline Content-Disposition', async () => {
+    const claim = await createClaim();
+    await attachNewReceipt(claim.claimId, claim.version);
+
+    const file = await aisha.get(`/claims/${claim.claimId}/receipt`);
+
+    expect(file.headers.get('content-disposition')).toBe(
+      `inline; filename="Client flight.pdf"; filename*=UTF-8''Client%20flight.pdf`,
+    );
+  });
+
   it('uploads, views, replaces, and removes a receipt', async () => {
     const claim = await createClaim();
     const upload = await uploadReceipt();

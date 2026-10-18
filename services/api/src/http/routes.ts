@@ -17,6 +17,7 @@ import {
 } from '@claimflow/contracts';
 import type { Actor } from '@claimflow/domain';
 
+import { contentDisposition } from '../application/content-disposition.js';
 import { NotFoundError, ValidationError } from '../application/errors.js';
 import type { Application } from '../composition.js';
 import type { SessionCookies } from './session-cookie.js';
@@ -458,10 +459,4 @@ function decodeFileName(header: string | undefined): string {
   } catch {
     return header;
   }
-}
-
-/** `inline` with an ASCII fallback and an RFC 5987 UTF-8 file name. */
-function contentDisposition(fileName: string): string {
-  const ascii = fileName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
-  return `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
 }

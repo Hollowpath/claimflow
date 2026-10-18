@@ -229,6 +229,13 @@ Against a fake client that applies the approved condition to an existing item:
 - the exact pending and final `DeleteObject` requests, with no preliminary read and success for missing objects;
 - invalid buckets, records, and receipt IDs rejected before any command, fixed error messages without sensitive values, and only `CopyObject` and `DeleteObject` ever sent.
 
+## S3 download URLs (`services/api/test/s3-download-url.test.ts`)
+
+- the exact bucket, final key, `Content-Disposition`, five-minute lifetime, and single captured signing time passed to the signer once, and the exact `expiresAt`;
+- ASCII, quoted, and Unicode file names through the shared `contentDisposition`, which the local receipt route also uses (checked in `http-api.test.ts`);
+- invalid buckets, receipt IDs, unsanitized file names, and signer output rejected, with fixed messages that expose no bucket, key, ID, or name;
+- the real signer producing a local HTTPS URL with a five-minute expiry, the expected key and disposition, and no S3 command or network request.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
