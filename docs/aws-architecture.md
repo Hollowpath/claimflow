@@ -89,16 +89,16 @@ The complete rules are in [domain-model.md](domain-model.md). The parts that sha
 ### Deployment boundary
 
 - Infrastructure is defined with AWS CDK in TypeScript in the `infrastructure/` workspace, as one stack (`ClaimFlowStack`, stack ID `ClaimFlow`).
-- Defined in the stack and deployed in `ap-southeast-1`: the `ClaimFlow` DynamoDB table (section 5), the `ClaimFlow` Cognito User Pool (section 17), and the receipt bucket (section 11) without CORS rules yet.
+- Defined in the stack and deployed in `ap-southeast-1`: the `ClaimFlow` DynamoDB table (section 5), the `ClaimFlow` Cognito User Pool (section 17), and the receipt bucket (section 11). The receipt bucket's single CORS rule (section 11) is deployed too: the CloudFront HTTPS origin only, `POST` only, allowed headers `*`, no exposed headers, and no max age. It permits the browser to send presigned POST uploads from the web application but grants no S3 authorization: every upload still needs a valid presigned POST policy. The AWS application runtime and the browser upload flow are not implemented yet, so nothing uploads receipts to the bucket.
 - Defined in the stack and deployed in `ap-southeast-1`: web hosting (the web assets bucket and the CloudFront distribution, described below). No built web application files are uploaded yet, so the application is not available through CloudFront.
 - Defined in the stack and deployed in `ap-southeast-1`: the Cognito web app client `ClaimFlowWeb` and the classic hosted UI domain (section 17). The web application has no Cognito integration yet and still uses development sign-in locally.
 - The application is not connected to this infrastructure yet: it still runs locally with development sign-in and local adapters, so receipt uploads do not reach the bucket.
 - Defined in the stack and deployed in `ap-southeast-1`: the `claimflow` event bus, the cleanup queue and its dead-letter queue, and the rule routing the two internal cleanup events to the cleanup queue (section 15). Nothing publishes to them yet.
 - Defined in the stack and deployed in `ap-southeast-1`: the cleanup worker Lambda function `claimflow-cleanup-worker` with its execution role, its log group, and the SQS event-source mapping from the cleanup queue (sections 12 and 19). Nothing currently produces outbox events, so the cleanup path stays idle until the AWS application runtime exists.
-- Defined in the stack and deployed in `ap-southeast-1`: the outbox publisher Lambda function `claimflow-outbox-publisher` with its execution role, its log group, its failure queue `claimflow-outbox-publisher-failures`, and the DynamoDB stream event-source mapping (section 15). The sweeper and the receipt janitor are not connected, and the AWS application runtime does not exist yet, so nothing produces outbox events and the publisher stays idle.
+- Defined in the stack and deployed in `ap-southeast-1`: the outbox publisher Lambda function `claimflow-outbox-publisher` with its execution role, its log group, its failure queue `claimflow-outbox-publisher-failures`, and the DynamoDB stream event-source mapping (section 15). The receipt janitor and the sweeper are deployed as well, but the AWS application runtime does not exist yet, so nothing produces outbox events and the publisher stays idle.
 - Defined in the stack and deployed in `ap-southeast-1`: the receipt janitor Lambda function `claimflow-receipt-janitor` with its execution role, its log group, its failure queue `claimflow-receipt-janitor-failures`, and the DynamoDB stream event-source mapping (section 11). The AWS application runtime does not exist yet, so nothing creates pending receipt records and the janitor stays idle.
 - Defined in the stack and deployed in `ap-southeast-1`: the outbox sweeper Lambda function `claimflow-outbox-sweeper` with its execution role, its log group, the EventBridge schedule that invokes it every 15 minutes, and the Lambda invocation permission for that rule (section 15). The enabled schedule runs every 15 minutes and queries `GSI4` even while no outbox events exist. The AWS application runtime is not implemented, so the publisher and sweeper currently have no application-created outbox events to process.
-- All other approved components remain future increments: the API and its Lambda function and the receipt bucket's CORS rules.
+- All other approved components remain future increments: the API and its Lambda function.
 - Phase 0 produced this design only; infrastructure is added in separate, reviewed increments.
 - Deployment is manual. It must never run automatically, including from CI, without explicit authorization.
 
@@ -112,7 +112,7 @@ The built React web application is hosted as static files in a private S3 bucket
 - **Client-side routes:** `index.html` is the default root object. Because CloudFront has no permission to list the bucket, S3 answers a missing key with `403` rather than `404`; both are answered with `/index.html` and status `200`, so that React `BrowserRouter` routes such as `/claims/<id>` load the application, which then resolves the route.
 - **Domain:** the distribution's default `*.cloudfront.net` domain with CloudFront's default certificate. A custom domain is deferred (section 24).
 
-The distribution's HTTPS origin is the web origin for the Cognito app client's callback and sign-out URLs (section 17) and for the receipt bucket's CORS rules, which are added when the application starts using the bucket.
+The distribution's HTTPS origin is the web origin for the Cognito app client's callback and sign-out URLs (section 17) and for the receipt bucket's CORS rule, which allows `POST` from that origin only.
 
 Publishing the built web application to the bucket, and how the web application reaches the HTTP API from the CloudFront origin, are decided in later increments. Locally, the web application still runs from the Vite development server or as built files served by the local API.
 
@@ -768,7 +768,7 @@ For each record it reads `receiptId` from the old image and deletes `receipts/<r
 - **Failure queue:** `claimflow-receipt-janitor-failures`, a standard queue with SQS-managed encryption, TLS enforced, and 14-day retention. It receives the metadata of stream batches that exhausted their retries or expired.
 - **Event-source mapping:** the table stream, starting at `LATEST`, batch size 10, `ReportBatchItemFailures`, batch bisection on error, 5 retry attempts, maximum record age 24 hours, the failure queue as the on-failure destination, and the filter shown above.
 
-The table stream now has two consumers, the outbox publisher and the receipt janitor. These resources are deployed in `ap-southeast-1`. The scheduled outbox sweeper is not connected yet. The AWS application runtime does not exist yet, so nothing creates pending receipt records and the janitor stays idle.
+The table stream now has two consumers, the outbox publisher and the receipt janitor. These resources are deployed in `ap-southeast-1`. The scheduled outbox sweeper is deployed as well. The AWS application runtime does not exist yet, so nothing creates pending receipt records and the janitor stays idle.
 
 ### Upload verification test
 

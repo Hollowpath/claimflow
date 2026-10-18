@@ -447,10 +447,64 @@ describe('ClaimFlowStack', () => {
       });
     });
 
-    it('has no CORS rules, website hosting, or auto-delete', () => {
-      expect(bucket.Properties).not.toHaveProperty('CorsConfiguration');
+    it('has no website hosting or auto-delete', () => {
       expect(bucket.Properties).not.toHaveProperty('WebsiteConfiguration');
       expect(JSON.stringify(bucket)).not.toContain('auto-delete');
+    });
+
+    describe('CORS', () => {
+      const rules = (): Record<string, any>[] =>
+        bucket.Properties.CorsConfiguration.CorsRules;
+
+      it('has exactly one rule', () => {
+        expect(rules()).toHaveLength(1);
+        expect(Object.keys(bucket.Properties.CorsConfiguration)).toEqual([
+          'CorsRules',
+        ]);
+      });
+
+      it('allows POST with any request header from the web origin only', () => {
+        expect(rules()).toEqual([
+          {
+            AllowedOrigins: [
+              {
+                'Fn::Join': [
+                  '',
+                  [
+                    'https://',
+                    { 'Fn::GetAtt': [distributionLogicalId, 'DomainName'] },
+                  ],
+                ],
+              },
+            ],
+            AllowedMethods: ['POST'],
+            AllowedHeaders: ['*'],
+          },
+        ]);
+      });
+
+      it('allows no wildcard or localhost origin and no other method', () => {
+        const [rule] = rules();
+        const json = JSON.stringify(rule.AllowedOrigins);
+        expect(json).not.toContain('"*"');
+        expect(json).not.toContain('localhost');
+        expect(json).not.toContain('http://');
+        expect(rule.AllowedOrigins).toHaveLength(1);
+        for (const method of ['GET', 'PUT', 'DELETE', 'HEAD']) {
+          expect(rule.AllowedMethods).not.toContain(method);
+        }
+      });
+
+      it('exposes no response headers and sets no cache duration', () => {
+        const [rule] = rules();
+        expect(rule).not.toHaveProperty('ExposedHeaders');
+        expect(rule).not.toHaveProperty('MaxAge');
+        expect(rule).not.toHaveProperty('Id');
+      });
+
+      it('leaves the web assets bucket without CORS', () => {
+        expect(webBucket.Properties).not.toHaveProperty('CorsConfiguration');
+      });
     });
   });
 

@@ -121,7 +121,7 @@ Defined with the `Bucket` construct (`receiptBucket` on the stack). The applicat
 
 The bucket layout and the upload contract are defined in section 11 of the architecture document. Attached receipts under `receipts/` have no lifecycle rule; they are deleted only by the future cleanup worker.
 
-**CORS is intentionally deferred.** Browser uploads need a CORS rule allowing `POST` from the web application's origin, which is the web distribution's HTTPS origin. The rule is added with the S3 receipt adapter, when the application starts using the bucket; until then the bucket has no CORS rules. It also has no static website hosting, CloudFront access, or IAM access grants.
+**CORS.** The bucket has exactly one CORS rule, defined and deployed in `ap-southeast-1`: allowed origin `https://<CloudFront distribution domain>` (the web distribution's HTTPS origin, resolved by CloudFormation), allowed method `POST` only, and allowed headers `*`. There are no wildcard or localhost origins, no `GET`, `PUT` or `DELETE`, no exposed headers, and no max age. It permits the browser to send presigned POST uploads from the web application but grants no S3 authorization: every upload still needs a valid presigned POST policy. The AWS application runtime and the browser upload flow are not implemented yet, so nothing uploads receipts to the bucket. The bucket has no static website hosting, CloudFront access, or IAM access grants.
 
 The TLS policy is a separate `AWS::S3::BucketPolicy` resource that the CDK creates for the bucket. Unlike the bucket, it uses CloudFormation's default deletion policy, so it is deleted with the stack while the bucket is retained.
 
@@ -194,7 +194,7 @@ The stack defines the outbox publisher (section 15 of the architecture document)
 
 ### Receipt janitor
 
-The stack defines the receipt janitor (section 11 of the architecture document). It is defined and deployed in `ap-southeast-1`. The table stream now has two consumers: the outbox publisher and the receipt janitor. The scheduled outbox sweeper is not connected yet. The AWS application runtime does not exist yet, so nothing creates pending receipt records and the janitor stays idle.
+The stack defines the receipt janitor (section 11 of the architecture document). It is defined and deployed in `ap-southeast-1`. The table stream now has two consumers: the outbox publisher and the receipt janitor. The scheduled outbox sweeper is deployed as well. The AWS application runtime does not exist yet, so nothing creates pending receipt records and the janitor stays idle.
 
 - Function `claimflow-receipt-janitor` (`receiptJanitor` on the stack): Node.js 24, ARM64, 256 MB, 60-second timeout, tracing disabled, bundled like the other functions. The entry point is `services/api/src/adapters/aws/receipt-janitor-lambda.ts`; its environment holds `CLAIMFLOW_RECEIPT_BUCKET_NAME`.
 - Log group `/aws/lambda/claimflow-receipt-janitor` (`receiptJanitorLogGroup`) with 30-day retention.

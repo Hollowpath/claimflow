@@ -194,7 +194,7 @@ export class ClaimFlowStack extends cdk.Stack {
     });
 
     // No bucket name: S3 names are global, so CloudFormation generates one.
-    // CORS is deferred until the web application's origin is decided.
+    // Its CORS rule is added below, once the web origin is known.
     this.receiptBucket = new s3.Bucket(this, 'ReceiptBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -265,6 +265,14 @@ export class ClaimFlowStack extends cdk.Stack {
     });
 
     const webOrigin = `https://${this.webDistribution.distributionDomainName}`;
+
+    // Lets the web application's browser send presigned POST uploads. CORS
+    // is not authorization: the presigned POST policy still gates every write.
+    this.receiptBucket.addCorsRule({
+      allowedOrigins: [webOrigin],
+      allowedMethods: [s3.HttpMethods.POST],
+      allowedHeaders: ['*'],
+    });
     const webCallbackUrl = `${webOrigin}${CLAIMFLOW_AUTH_CALLBACK_PATH}`;
 
     // A public client for the browser: no secret, and the authorization code
