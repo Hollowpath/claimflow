@@ -850,6 +850,8 @@ The JSON is canonical: object keys are sorted at every level, with no whitespace
 
 `services/api/src/adapters/aws/dynamodb-cursor.ts` encodes and validates cursors; an invalid cursor produces the same `ValidationError` with `INVALID_CURSOR` as the local runtime, before any query is sent. The read adapters in `services/api/src/adapters/aws/dynamodb-readers.ts` implement A1, A5–A10, C1, and C2 with `GetItem` and `Query` only, decode every item with the item codecs (section 7), and match the repository read methods; write methods are not implemented yet. A page query asks for `limit + 1` items and keeps querying from `LastEvaluatedKey` when DynamoDB returns a partial response, so a page is full whenever more items exist. Its cursor is the key of the last item returned, never of the look-ahead item. Category listing reads every page of the bounded `CATEGORIES` partition.
 
+`DynamoDbCategoryReader` has its own module, `services/api/src/adapters/aws/dynamodb-category-reader.ts` (re-exported by `dynamodb-readers.ts`). It validates the table name at construction and the category ID before any command, with fixed messages that name no value. `get` sends one strongly consistent `GetItem` and fails with `ItemIntegrityError` if the stored item is not the requested category; `list` queries `PK = CATEGORIES` with `begins_with(SK, CATEGORY#)` on the base table, ascending, strongly consistent, never a `Scan`, follows every `LastEvaluatedKey`, and fails with a fixed message if a continuation key repeats. Both return domain categories without `claimCount` or other persistence metadata, and SDK and codec errors propagate unchanged. Category writes are not implemented yet.
+
 Signing cursors with an HMAC is optional hardening (section 24).
 
 ## 14. TTL policies

@@ -136,6 +136,17 @@ Against an in-memory fake table that applies key order, `Limit`, `ExclusiveStart
 - cursors from another list, user, status, or claim, and malformed or oversized cursors, rejected before any query;
 - every page of the category partition, and only `GetItem` and `Query` ever sent.
 
+## DynamoDB category reader (`services/api/test/dynamodb-category-reader.test.ts`)
+
+With a scripted client that records every command:
+
+- the exact strongly consistent `GetCommand` key, a missing category, and a decoded domain category without persistence metadata;
+- the exact `QueryCommand` inputs for every page of the category partition (base table, no index, filter, or limit), the order kept across pages, empty pages with a continuation key, and an empty partition;
+- malformed items, items under another key, and items that are not categories rejected through the codec or the requested-key check, and a repeated continuation key refused;
+- an invalid table name rejected at construction and invalid category IDs (empty, blank, key-like, oversized, non-strings) rejected before any command, with fixed messages;
+- SDK errors propagated unchanged, including after a first page;
+- only `GetItem` and `Query` ever sent, and no write methods on the reader.
+
 ## DynamoDB idempotency and outbox items (`services/api/test/dynamodb-idempotency-items.test.ts`, `services/api/test/dynamodb-outbox-items.test.ts`)
 
 - the approved example idempotency, claim event, and cleanup event items encoded exactly;

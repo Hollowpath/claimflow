@@ -5,15 +5,9 @@ import {
   type QueryCommandInput,
   type QueryCommandOutput,
 } from '@aws-sdk/lib-dynamodb';
-import type {
-  Category,
-  Claim,
-  ClaimHistoryEntry,
-  ClaimStatus,
-} from '@claimflow/domain';
+import type { Claim, ClaimHistoryEntry, ClaimStatus } from '@claimflow/domain';
 
 import type {
-  CategoryRepository,
   ClaimRepository,
   Page,
   PageRequest,
@@ -25,7 +19,6 @@ import {
   type CursorList,
 } from './dynamodb-cursor.js';
 import {
-  categoriesPartitionKey,
   categoryKey,
   claimKey,
   decodeCategoryItem,
@@ -40,6 +33,8 @@ import {
  * and `Query`, with no filter expressions, and decode every item with the
  * item codecs. Write methods are added in a later increment.
  */
+
+export { DynamoDbCategoryReader } from './dynamodb-category-reader.js';
 
 /** The commands these readers send; a `DynamoDBDocumentClient` provides them. */
 export interface ReadDocumentClient {
@@ -61,8 +56,6 @@ type ClaimReads = Pick<
   | 'listByStatus'
   | 'listHistory'
 >;
-
-type CategoryReads = Pick<CategoryRepository, 'get' | 'list'>;
 
 export class DynamoDbClaimReader implements ClaimReads {
   private readonly client: ReadDocumentClient;
@@ -197,59 +190,6 @@ export class DynamoDbClaimReader implements ClaimReads {
       (item) => decodeClaimItem(item).claim,
       (claim) => encodeClaimCursor(list, claim),
     );
-  }
-}
-
-export class DynamoDbCategoryReader implements CategoryReads {
-  private readonly client: ReadDocumentClient;
-  private readonly tableName: string;
-
-  public constructor({ client, tableName }: DynamoDbReaderOptions) {
-    this.client = client;
-    this.tableName = tableName;
-  }
-
-  /** C1: strongly consistent `GetItem`. */
-  public async get(categoryId: string): Promise<Category | undefined> {
-    const output = await this.client.send(
-      new GetCommand({
-        TableName: this.tableName,
-        Key: categoryKey(categoryId),
-        ConsistentRead: true,
-      }),
-    );
-    return output.Item === undefined
-      ? undefined
-      : decodeCategoryItem(output.Item).category;
-  }
-
-  /**
-   * C2: every category, in key order, read strongly consistently. The
-   * category partition is small and bounded, so every page is read.
-   */
-  public async list(): Promise<readonly Category[]> {
-    const categories: Category[] = [];
-    let startKey: Record<string, unknown> | undefined;
-    do {
-      const output: QueryCommandOutput = await this.client.send(
-        new QueryCommand({
-          TableName: this.tableName,
-          KeyConditionExpression: 'PK = :pk AND begins_with(SK, :category)',
-          ExpressionAttributeValues: {
-            ':pk': categoriesPartitionKey,
-            ':category': 'CATEGORY#',
-          },
-          ScanIndexForward: true,
-          ConsistentRead: true,
-          ...(startKey === undefined ? {} : { ExclusiveStartKey: startKey }),
-        }),
-      );
-      for (const item of output.Items ?? []) {
-        categories.push(decodeCategoryItem(item).category);
-      }
-      startKey = nextStartKey(startKey, output.LastEvaluatedKey);
-    } while (startKey !== undefined);
-    return categories;
   }
 }
 
