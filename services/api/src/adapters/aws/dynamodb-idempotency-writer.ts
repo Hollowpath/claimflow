@@ -3,6 +3,7 @@ import { PutCommand, type PutCommandOutput } from '@aws-sdk/lib-dynamodb';
 import type { EpochSeconds } from '../../application/commit.js';
 import {
   encodeIdempotencyItem,
+  idempotencyWriteCondition,
   type IdempotencyRecord,
 } from './dynamodb-idempotency-items.js';
 
@@ -27,14 +28,6 @@ export interface DynamoDbRejectionWriterOptions {
   readonly client: PutDocumentClient;
   readonly tableName: string;
 }
-
-/**
- * The record may be written only if no record exists, or the existing one
- * has expired. The strict `<` matches the lookup: a record expiring exactly
- * now still counts as present.
- */
-export const rejectionWriteCondition =
-  'attribute_not_exists(PK) OR expiresAt < :nowEpoch';
 
 export class DynamoDbRejectionWriter {
   private readonly client: PutDocumentClient;
@@ -73,7 +66,7 @@ export class DynamoDbRejectionWriter {
       new PutCommand({
         TableName: this.tableName,
         Item: item,
-        ConditionExpression: rejectionWriteCondition,
+        ConditionExpression: idempotencyWriteCondition,
         ExpressionAttributeValues: { ':nowEpoch': nowEpoch },
       }),
     );

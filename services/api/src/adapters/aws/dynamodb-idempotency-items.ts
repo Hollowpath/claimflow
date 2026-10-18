@@ -42,6 +42,15 @@ export function idempotencyKey(actorId: string, key: string) {
   return { PK: `IDEMPOTENCY#${actorId}#${key}`, SK: 'IDEMPOTENCY' } as const;
 }
 
+/**
+ * The condition on every idempotency `Put` (section 9), with `:nowEpoch` the
+ * current time in epoch seconds: no record exists, or the existing one has
+ * expired. The strict `<` matches the lookup, so a record expiring exactly
+ * now still counts as present.
+ */
+export const idempotencyWriteCondition =
+  'attribute_not_exists(PK) OR expiresAt < :nowEpoch';
+
 const recordAttributes = new Set([
   'PK',
   'SK',

@@ -8,11 +8,11 @@ import { beforeEach, describe, expect, expectTypeOf, it } from 'vitest';
 
 import {
   encodeIdempotencyItem,
+  idempotencyWriteCondition,
   type IdempotencyRecord,
 } from '../src/adapters/aws/dynamodb-idempotency-items.js';
 import {
   DynamoDbRejectionWriter,
-  rejectionWriteCondition,
   type PutDocumentClient,
   type RejectedIdempotencyRecord,
 } from '../src/adapters/aws/dynamodb-idempotency-writer.js';
@@ -124,7 +124,7 @@ describe('recordRejection', () => {
       ExpressionAttributeValues: { ':nowEpoch': createdEpoch },
     });
     expect(puts()[0]!.input.Item).toEqual(encodeIdempotencyItem(rejected));
-    expect(rejectionWriteCondition).toBe(
+    expect(idempotencyWriteCondition).toBe(
       'attribute_not_exists(PK) OR expiresAt < :nowEpoch',
     );
   });

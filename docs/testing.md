@@ -168,6 +168,14 @@ Against a fake client that applies the approved condition to an existing item:
 - a new record expiring exactly now still written, while an existing record expiring exactly now or later blocks the write and one that expired before now is replaced;
 - `ConditionalCheckFailedException` propagating as the identical object, other SDK errors unchanged, and only `PutCommand` ever sent.
 
+## DynamoDB transaction envelope (`services/api/test/dynamodb-transaction.test.ts`)
+
+- an exact transaction of business operations, a pending outbox `Put`, and the completed idempotency `Put`, in that order, with their condition expressions;
+- `204` responses stored without a body, zero and several events in order, and invalid responses and events rejected through the codecs;
+- tokens stable for rebuilt identical inputs, changed by any business value, event, response, or order, and never part of their own hashed payload;
+- rejection of empty business items, wrong tables, malformed or unsupported operations and keys, duplicate targets including collisions with outbox and idempotency items, and more than 100 operations, with exactly 100 accepted;
+- errors that never name key values, and no DynamoDB command ever sent.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

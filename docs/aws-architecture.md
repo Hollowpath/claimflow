@@ -476,6 +476,10 @@ There is no state in which a change exists without its history, its events, or i
 
 Writes that carry a publishable event also set `lastEventVersion` on the claim or category in the same update.
 
+### Transaction envelope
+
+`composeBusinessTransaction` in `services/api/src/adapters/aws/dynamodb-transaction.ts` builds, but never sends, the `TransactWriteItems` input common to every mutation. It contains the business operations supplied by a repository builder, in order, then one outbox `Put` per event with `attribute_not_exists(PK)`, in order, then the completed idempotency `Put`. Outbox items are encoded as `PENDING` by the outbox codec. The idempotency record is encoded by the idempotency codec with the shared condition `attribute_not_exists(PK) OR expiresAt < :nowEpoch` (`idempotencyWriteCondition`, also used by the rejection writer), with `:nowEpoch` taken from the record's `createdAt`. The `ClientRequestToken` is then derived from the complete `{ TransactItems }` payload, which never contains the token. Before returning, it requires at least one business operation, at most 100 operations in all, exactly one `Put`, `Update`, `Delete`, or `ConditionCheck` per entry on the supplied table, string `PK` and `SK` keys, and no item touched twice, including between business, outbox, and idempotency items. Business conditions and category guards are the business builders' responsibility. The 4 MB request size is not estimated; the item codecs and body limits bound it.
+
 ### Transaction request tokens
 
 Every `TransactWriteItems` request carries a `ClientRequestToken` of at most 36 characters.
