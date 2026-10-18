@@ -136,6 +136,14 @@ Against an in-memory fake table that applies key order, `Limit`, `ExclusiveStart
 - cursors from another list, user, status, or claim, and malformed or oversized cursors, rejected before any query;
 - every page of the category partition, and only `GetItem` and `Query` ever sent.
 
+## DynamoDB idempotency and outbox items (`services/api/test/dynamodb-idempotency-items.test.ts`, `services/api/test/dynamodb-outbox-items.test.ts`)
+
+- the approved example idempotency, claim event, and cleanup event items encoded exactly;
+- completed and rejected idempotency records, including a `204` stored and read back without a body, and refusal of invalid keys, fingerprints, outcomes and statuses, timestamps, TTLs other than exactly 24 hours, and bodies that are not JSON, too deep, too wide, cyclic, or over 300 KB of UTF-8 (tested at the multibyte boundary);
+- every approved event type routed to its aggregate partition and round-tripped while pending and once published, with GSI4 present only while pending and a TTL exactly 7 days after publication;
+- rejection of wrong keys, event types, schema versions, sources, aggregates, previous event versions, payload identities, missing or invalid payload fields, and index attributes;
+- no free-text field in any outbox item, and errors that never echo payload values or malformed keys.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

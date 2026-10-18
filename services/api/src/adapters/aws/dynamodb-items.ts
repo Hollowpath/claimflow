@@ -1,4 +1,4 @@
-import { idSchema } from '@claimflow/contracts';
+import { idempotencyKeySchema, idSchema } from '@claimflow/contracts';
 import {
   businessPurposeMaxLength,
   claimHistoryActions,
@@ -22,6 +22,8 @@ import {
   type Money,
   type Receipt,
 } from '@claimflow/domain';
+
+import { canonicalJson } from './transaction-token.js';
 
 /**
  * Pure codecs between domain values and ClaimFlow table items
@@ -438,7 +440,7 @@ function readCategory(item: DynamoItem, fail: Fail): StoredCategory {
 
 // Validation
 
-type Fail = (problem: string) => never;
+export type Fail = (problem: string) => never;
 
 /** Canonical `Date.toISOString` timestamps, which sort as text by time. */
 const isoTimestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -456,18 +458,38 @@ export const invalidKeyIdentifier = '(with an invalid key)';
 
 const isKeyId = (value: string) => idSchema.safeParse(value).success;
 
-/** `CLAIM#<id>` or `CATEGORIES`. */
+/** `CLAIM#<id>`, `CATEGORIES`, or `IDEMPOTENCY#<actorId>#<key>`. */
 function isSafePartitionKey(value: string): boolean {
+  if (value.startsWith('IDEMPOTENCY#')) {
+    const [actorId = '', key = '', ...rest] = value
+      .slice('IDEMPOTENCY#'.length)
+      .split('#');
+    return (
+      rest.length === 0 &&
+      isKeyId(actorId) &&
+      idempotencyKeySchema.safeParse(key).success
+    );
+  }
   return (
     value === categoriesPartitionKey ||
     (value.startsWith('CLAIM#') && isKeyId(value.slice('CLAIM#'.length)))
   );
 }
 
-/** `CLAIM`, `HISTORY#` and 10 digits, or `CATEGORY#<id>`. */
+/**
+ * `CLAIM`, `HISTORY#` and 10 digits, `CATEGORY#<id>`, `IDEMPOTENCY`, or
+ * `OUTBOX#<timestamp>#<id>`.
+ */
 function isSafeSortKey(value: string): boolean {
+  if (value.startsWith('OUTBOX#')) {
+    const [occurredAt = '', eventId = '', ...rest] = value
+      .slice('OUTBOX#'.length)
+      .split('#');
+    return rest.length === 0 && isIsoTimestamp(occurredAt) && isKeyId(eventId);
+  }
   return (
     value === 'CLAIM' ||
+    value === 'IDEMPOTENCY' ||
     /^HISTORY#\d{10}$/.test(value) ||
     (value.startsWith('CATEGORY#') && isKeyId(value.slice('CATEGORY#'.length)))
   );
@@ -478,7 +500,7 @@ function isSafeSortKey(value: string): boolean {
  * known ClaimFlow shape; otherwise the stored key could itself be arbitrary
  * text, so a generic identifier is used instead.
  */
-function failWith(
+export function failWith(
   ErrorType: typeof ItemIntegrityError | typeof ItemEncodingError,
   item: DynamoItem,
 ): Fail {
@@ -499,24 +521,52 @@ function failWith(
  * Reads typed attributes, failing with the attribute name and the kind of
  * problem only; stored values never appear in messages.
  */
-class AttributeReader {
+export class AttributeReader {
+  /** `field` names a nested map, such as `payload`, in messages. */
   public constructor(
     private readonly item: DynamoItem,
     private readonly fail: Fail,
+    private readonly field?: string,
   ) {}
+
+  /** A reader for the map in attribute `name`, which must be a plain map. */
+  public map(name: string): AttributeReader {
+    const value = this.item[name];
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return this.fail(`${this.label(name)} must be a map`);
+    }
+    return new AttributeReader(
+      value as DynamoItem,
+      this.fail,
+      this.label(name),
+    );
+  }
 
   public allowOnly(allowed: ReadonlySet<string>): void {
     for (const name of Object.keys(this.item)) {
       if (!allowed.has(name)) {
-        this.fail('it has an unexpected attribute');
+        this.fail(
+          this.field === undefined
+            ? 'it has an unexpected attribute'
+            : `${this.field} has an unexpected field`,
+        );
       }
     }
+  }
+
+  /** Whether attribute `name` is present with a value. */
+  public has(name: string): boolean {
+    return this.item[name] !== undefined;
+  }
+
+  private label(name: string): string {
+    return this.field === undefined ? name : `${this.field}.${name}`;
   }
 
   public noIndexes(): void {
     for (const name of indexAttributes) {
       if (name in this.item) {
-        this.fail(`this item type must not have ${name}`);
+        this.fail(`this item type must not have ${this.label(name)}`);
       }
     }
   }
@@ -527,12 +577,12 @@ class AttributeReader {
       const wanted = expected[name];
       if (wanted === undefined) {
         if (name in this.item) {
-          this.fail(`${name} must be absent`);
+          this.fail(`${this.label(name)} must be absent`);
         }
       } else if (value === undefined) {
-        this.fail(`${name} is missing`);
+        this.fail(`${this.label(name)} is missing`);
       } else if (value !== wanted) {
-        this.fail(`${name} does not match the claim`);
+        this.fail(`${this.label(name)} does not match the item`);
       }
     }
   }
@@ -557,12 +607,12 @@ class AttributeReader {
     const value = this.item[name];
     return typeof value === 'string'
       ? value
-      : this.fail(`${name} must be a string`);
+      : this.fail(`${this.label(name)} must be a string`);
   }
 
   public check(name: string, valid: (value: string) => boolean): string {
     const value = this.string(name);
-    return valid(value) ? value : this.fail(`${name} is not valid`);
+    return valid(value) ? value : this.fail(`${this.label(name)} is not valid`);
   }
 
   public id(name: string): string {
@@ -586,35 +636,35 @@ class AttributeReader {
     const value = this.string(name);
     return (values as readonly string[]).includes(value)
       ? (value as T)
-      : this.fail(`${name} is not an allowed value`);
+      : this.fail(`${this.label(name)} is not an allowed value`);
   }
 
   public boolean(name: string): boolean {
     const value = this.item[name];
     return typeof value === 'boolean'
       ? value
-      : this.fail(`${name} must be a boolean`);
+      : this.fail(`${this.label(name)} must be a boolean`);
   }
 
   public number(name: string): number {
     const value = this.item[name];
     return typeof value === 'number'
       ? value
-      : this.fail(`${name} must be a number`);
+      : this.fail(`${this.label(name)} must be a number`);
   }
 
   public nonNegativeInteger(name: string): number {
     const value = this.number(name);
     return Number.isSafeInteger(value) && value >= 0
       ? value
-      : this.fail(`${name} must be a non-negative whole number`);
+      : this.fail(`${this.label(name)} must be a non-negative whole number`);
   }
 
   public positiveInteger(name: string): number {
     const value = this.number(name);
     return Number.isSafeInteger(value) && value >= 1
       ? value
-      : this.fail(`${name} must be a positive whole number`);
+      : this.fail(`${this.label(name)} must be a positive whole number`);
   }
 
   /** A non-negative event version no newer than the aggregate's version. */
@@ -622,7 +672,32 @@ class AttributeReader {
     const value = this.nonNegativeInteger(name);
     return value <= aggregateVersion
       ? value
-      : this.fail(`${name} is newer than the aggregate version`);
+      : this.fail(`${this.label(name)} is newer than the aggregate version`);
+  }
+
+  /**
+   * A JSON value (no `undefined`, sets, binary, or non-finite numbers) that
+   * nests at most `maxDepth` levels and serializes to at most `maxBytes` UTF-8
+   * bytes, so it can be stored as a DynamoDB map. The shape is checked first,
+   * with bounded work, so no stored value can exhaust the stack or memory.
+   */
+  public json(name: string, maxDepth: number, maxBytes: number): unknown {
+    const value = this.item[name];
+    // Every map, list, and scalar adds at least one byte to the JSON text.
+    const shape = checkShape(value, maxDepth, maxBytes);
+    if (shape !== undefined) {
+      return this.fail(`${this.label(name)} is ${shape}`);
+    }
+    let text: string;
+    try {
+      text = canonicalJson(value);
+    } catch {
+      return this.fail(`${this.label(name)} is not a JSON value`);
+    }
+    if (Buffer.byteLength(text, 'utf8') > maxBytes) {
+      return this.fail(`${this.label(name)} is too large`);
+    }
+    return value;
   }
 
   public money(name: string): Money {
@@ -633,7 +708,9 @@ class AttributeReader {
       Array.isArray(value) ||
       !hasExactly(value, ['amountMinor', 'currency'])
     ) {
-      return this.fail(`${name} must have only amountMinor and currency`);
+      return this.fail(
+        `${this.label(name)} must have only amountMinor and currency`,
+      );
     }
     const { amountMinor, currency } = value as Record<string, unknown>;
     if (
@@ -642,7 +719,7 @@ class AttributeReader {
       typeof currency !== 'string' ||
       !isCurrencyCode(currency)
     ) {
-      return this.fail(`${name} is not a valid amount`);
+      return this.fail(`${this.label(name)} is not a valid amount`);
     }
     return { amountMinor, currency };
   }
@@ -663,7 +740,9 @@ class AttributeReader {
       Array.isArray(value) ||
       !hasExactly(value, fields)
     ) {
-      return this.fail(`${name} must have exactly the receipt fields`);
+      return this.fail(
+        `${this.label(name)} must have exactly the receipt fields`,
+      );
     }
     const r = value as Record<string, unknown>;
     const valid =
@@ -682,7 +761,7 @@ class AttributeReader {
       typeof r.attachedAt === 'string' &&
       isIsoTimestamp(r.attachedAt);
     if (!valid) {
-      return this.fail(`${name} is not a valid receipt`);
+      return this.fail(`${this.label(name)} is not a valid receipt`);
     }
     return {
       receiptId: r.receiptId,
@@ -719,4 +798,40 @@ function definedOnly<T extends Record<string, unknown>>(
   return Object.fromEntries(
     Object.entries(value).filter(([, inner]) => inner !== undefined),
   ) as DefinedOnly<T>;
+}
+
+/**
+ * Walks `value` iteratively and stops as soon as it finds more than
+ * `maxDepth` levels of maps and lists, or more than `maxNodes` values in all.
+ * A cycle counts as too deep. Scalars are level 0.
+ */
+function checkShape(
+  value: unknown,
+  maxDepth: number,
+  maxNodes: number,
+): 'nested too deeply' | 'too large' | undefined {
+  const pending: { readonly value: unknown; readonly depth: number }[] = [
+    { value, depth: 0 },
+  ];
+  let seen = 0;
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    seen += 1;
+    if (typeof next.value !== 'object' || next.value === null) {
+      continue;
+    }
+    const level = next.depth + 1;
+    if (level > maxDepth) {
+      return 'nested too deeply';
+    }
+    const children: readonly unknown[] = Array.isArray(next.value)
+      ? next.value
+      : Object.values(next.value);
+    if (seen + pending.length + children.length > maxNodes) {
+      return 'too large';
+    }
+    for (const child of children) {
+      pending.push({ value: child, depth: level });
+    }
+  }
+  return undefined;
 }

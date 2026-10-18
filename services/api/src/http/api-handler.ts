@@ -15,12 +15,12 @@ import {
   ValidationError,
 } from '../application/errors.js';
 import type { StoredResponse } from '../application/ports.js';
+import { isTraceId } from '../application/tracing.js';
 import type { Application } from '../composition.js';
 import { toErrorReply } from './http-errors.js';
 import type { Reply, Route, RouteContext } from './routes.js';
 
 export const maxJsonBytes = 64 * 1024;
-const correlationIdPattern = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 /** An API request, independent of the transport that received it. */
 export interface ApiRequest {
@@ -94,8 +94,7 @@ async function handle(
   const requestId = randomUUID();
   const incomingCorrelation = headerValue(request, headers.correlationId);
   const correlationId =
-    incomingCorrelation !== undefined &&
-    correlationIdPattern.test(incomingCorrelation)
+    incomingCorrelation !== undefined && isTraceId(incomingCorrelation)
       ? incomingCorrelation
       : requestId;
   const { method } = request;

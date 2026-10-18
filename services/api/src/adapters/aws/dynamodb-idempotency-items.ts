@@ -1,0 +1,147 @@
+import { idempotencyKeySchema, idSchema } from '@claimflow/contracts';
+
+import {
+  expiresAfter,
+  type CompletedRequest,
+} from '../../application/commit.js';
+import { idempotencyRetentionMs } from '../../application/idempotency.js';
+import type { StoredResponse } from '../../application/ports.js';
+import {
+  AttributeReader,
+  failWith,
+  ItemEncodingError,
+  ItemIntegrityError,
+  type DynamoItem,
+  type Fail,
+} from './dynamodb-items.js';
+
+/**
+ * Pure codecs for idempotency records (docs/aws-architecture.md, sections 7
+ * and 10): the stored result of a request, keyed by the actor and the
+ * client's idempotency key.
+ */
+
+export const idempotencyEntityType = 'IdempotencyRecord';
+
+/**
+ * A stored result: `COMPLETED` for a committed success (2xx), `REJECTED` for
+ * a business rejection (4xx) stored so that retries get the same answer.
+ */
+export type IdempotencyRecord = CompletedRequest &
+  ({ readonly outcome: 'COMPLETED' } | { readonly outcome: 'REJECTED' });
+
+export type IdempotencyOutcome = IdempotencyRecord['outcome'];
+
+/** DynamoDB allows 32 levels of nesting; the body sits two levels down. */
+const maxBodyDepth = 30;
+/** UTF-8 bytes of canonical JSON; keeps a record inside DynamoDB's 400 KB. */
+export const maxResponseBodyBytes = 300 * 1024;
+const fingerprintPattern = /^[a-f0-9]{64}$/;
+
+export function idempotencyKey(actorId: string, key: string) {
+  return { PK: `IDEMPOTENCY#${actorId}#${key}`, SK: 'IDEMPOTENCY' } as const;
+}
+
+const recordAttributes = new Set([
+  'PK',
+  'SK',
+  'entityType',
+  'fingerprint',
+  'outcome',
+  'response',
+  'createdAt',
+  'expiresAt',
+]);
+
+export function encodeIdempotencyItem(record: IdempotencyRecord): DynamoItem {
+  const { response } = record;
+  const item: DynamoItem = {
+    ...idempotencyKey(record.actorId, record.key),
+    entityType: idempotencyEntityType,
+    fingerprint: record.fingerprint,
+    outcome: record.outcome,
+    response:
+      response.body === undefined
+        ? { status: response.status }
+        : { status: response.status, body: response.body },
+    createdAt: record.createdAt,
+    expiresAt: record.expiresAt,
+  };
+  readRecord(item, failWith(ItemEncodingError, item));
+  return item;
+}
+
+export function decodeIdempotencyItem(item: DynamoItem): IdempotencyRecord {
+  return readRecord(item, failWith(ItemIntegrityError, item));
+}
+
+function readRecord(item: DynamoItem, fail: Fail): IdempotencyRecord {
+  const read = new AttributeReader(item, fail);
+  read.noIndexes();
+  read.allowOnly(recordAttributes);
+  read.entityType(idempotencyEntityType);
+
+  const [actorId, key] = splitPartitionKey(item.PK, fail);
+  read.keys(idempotencyKey(actorId, key));
+
+  const fingerprint = read.check('fingerprint', (value) =>
+    fingerprintPattern.test(value),
+  );
+  const outcome = read.oneOf<IdempotencyOutcome>('outcome', [
+    'COMPLETED',
+    'REJECTED',
+  ]);
+  const createdAt = read.timestamp('createdAt');
+  const expiresAt = read.positiveInteger('expiresAt');
+  if (expiresAt !== expiresAfter(new Date(createdAt), idempotencyRetentionMs)) {
+    fail('expiresAt must be exactly 24 hours after createdAt');
+  }
+
+  const response = readResponse(read.map('response'), outcome, fail);
+  return { actorId, key, fingerprint, outcome, response, createdAt, expiresAt };
+}
+
+/** `IDEMPOTENCY#<actorId>#<key>`: neither part may contain `#`. */
+function splitPartitionKey(pk: unknown, fail: Fail): [string, string] {
+  if (typeof pk !== 'string' || !pk.startsWith('IDEMPOTENCY#')) {
+    return fail('its key is not an idempotency key');
+  }
+  const [actorId = '', key = '', ...rest] = pk
+    .slice('IDEMPOTENCY#'.length)
+    .split('#');
+  if (rest.length > 0 || !idSchema.safeParse(actorId).success) {
+    return fail('its key does not name a valid actor');
+  }
+  if (!idempotencyKeySchema.safeParse(key).success) {
+    return fail('its key does not hold a valid idempotency key');
+  }
+  return [actorId, key];
+}
+
+/**
+ * Completed results are 2xx and rejected results 4xx. A 204 response has no
+ * body; every other response has a JSON-compatible body.
+ */
+function readResponse(
+  read: AttributeReader,
+  outcome: IdempotencyOutcome,
+  fail: Fail,
+): StoredResponse {
+  read.allowOnly(new Set(['status', 'body']));
+  const status = read.positiveInteger('status');
+  const [low, high] = outcome === 'COMPLETED' ? [200, 299] : [400, 499];
+  if (status < low || status > high) {
+    fail(`response.status is not valid for a ${outcome} result`);
+  }
+  if (status === 204) {
+    if (read.has('body')) {
+      fail('response.body must be absent for status 204');
+    }
+    return { status, body: undefined };
+  }
+  if (!read.has('body')) {
+    fail('response.body is missing');
+  }
+  const body = read.json('body', maxBodyDepth, maxResponseBodyBytes);
+  return { status, body };
+}

@@ -32,7 +32,7 @@ export interface CompletedRequest {
   readonly response: StoredResponse;
   /** ISO 8601 creation time. */
   readonly createdAt: string;
-  /** TTL: 24 hours after `createdAt` (section 14). */
+  /** TTL: exactly `idempotencyRetentionMs` (24 hours) after `createdAt`. */
   readonly expiresAt: EpochSeconds;
 }
 
