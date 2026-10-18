@@ -136,6 +136,16 @@ Against an in-memory fake table that applies key order, `Limit`, `ExclusiveStart
 - cursors from another list, user, status, or claim, and malformed or oversized cursors, rejected before any query;
 - every page of the category partition, and only `GetItem` and `Query` ever sent.
 
+## DynamoDB claim reader (`services/api/test/dynamodb-claim-reader.test.ts`)
+
+With a scripted client that records every command, and the shared fake-table tests above run through the re-export:
+
+- the exact `GetItem` and `Query` inputs for A1 and A5 to A10: keys, index names, consistency, scan direction, and the `limit + 1` look-ahead, with no filter expression;
+- a cursor for the last returned item only, continuation through a partial response with the cursor as start key, and a repeated continuation key refused;
+- missing claims and categories, a direct lookup that returns another claim rejected with a value-free message, and malformed claim, history, and category items rejected through the codecs;
+- invalid client and table name at construction, and invalid IDs, statuses, page limits, missing page requests, and malformed, oversized, or foreign cursors rejected before any command with fixed messages;
+- SDK errors propagated unchanged for every read, only `GetItem` and `Query` sent, only read methods exposed, and the re-export being the same class.
+
 ## DynamoDB category reader (`services/api/test/dynamodb-category-reader.test.ts`)
 
 With a scripted client that records every command:

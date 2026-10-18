@@ -16,7 +16,7 @@ import {
 import type {
   DynamoDbReaderOptions,
   ReadDocumentClient,
-} from './dynamodb-readers.js';
+} from './dynamodb-read-support.js';
 
 /**
  * The read side of the DynamoDB category repository
