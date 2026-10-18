@@ -141,6 +141,42 @@ export function decodeOutboxItem(item: DynamoItem): StoredOutboxEvent {
   return readOutbox(item, failWith(ItemIntegrityError, item));
 }
 
+/** The fields of an event envelope, and nothing else. */
+const envelopeFields = [
+  'eventId',
+  'eventType',
+  'schemaVersion',
+  'occurredAt',
+  'source',
+  'aggregate',
+  'correlationId',
+  'causationId',
+  'actorId',
+  'payload',
+] as const;
+
+/**
+ * Validates an event envelope received as JSON, for example the `detail` of
+ * an EventBridge event, with the same rules as a stored outbox item: the
+ * exact fields, types, aggregate, and payload of its event type. Anything
+ * invalid raises an error without echoing values.
+ */
+export function parseOutboxEnvelope(value: unknown): OutboxEvent {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new TypeError('The event envelope is not an object.');
+  }
+  const names = Object.keys(value);
+  if (
+    names.length !== envelopeFields.length ||
+    !envelopeFields.every((name) => names.includes(name))
+  ) {
+    throw new TypeError('The event envelope does not have exactly its fields.');
+  }
+  // Encoding validates every field as a stored pending item; decoding the
+  // result returns the typed event.
+  return decodeOutboxItem(encodeOutboxItem(value as OutboxEvent)).event;
+}
+
 function readOutbox(item: DynamoItem, fail: Fail): StoredOutboxEvent {
   const read = new AttributeReader(item, fail);
   read.allowOnly(outboxAttributes);

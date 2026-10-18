@@ -316,6 +316,16 @@ Using TTL removal records built with the real marshaller and `S3ReceiptObjects` 
 - only unprocessed requests resent with capped exponential backoff, and the fixed error after the attempt limit;
 - query and write errors propagated unchanged, and invalid table names and claim IDs rejected before any command.
 
+## Cleanup worker handler (`services/api/test/cleanup-worker-handler.test.ts`)
+
+Using SQS records whose bodies are EventBridge events:
+
+- receipt deletions routed to the final object only, history purges to the purger, mixed batches, empty batches, and duplicate deliveries;
+- malformed JSON, non-object bodies, wrappers with missing, wrong, or extra fields (including each malformed `id`, `account`, `time`, `region`, `resources` entry, and `replay-name`), wrong sources, and mismatched detail types rejected, with EventBridge times accepted with and without fractional seconds;
+- publishable and unknown events and malformed internal envelopes and payloads rejected, using the outbox codec's rules;
+- dependency failures failing only their own record, every failed message ID returned in input order, and successes omitted;
+- a missing or empty message ID throwing a fixed message before any cleanup, and responses that contain only message IDs.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:
