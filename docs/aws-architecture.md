@@ -892,6 +892,8 @@ Payloads contain identifiers, amounts, categories, and status timestamps only. F
 
 Draft creation, draft edits, and receipt attachment are recorded in history but are not published. Internal events are routed only to the cleanup worker.
 
+`buildClaimLifecycleEvent` in `services/api/src/application/claim-events.ts` builds the one event of a lifecycle change (`SUBMIT`, `START_REVIEW`, `APPROVE`, `REJECT`, `REOPEN`, `MARK_PAID`) and returns nothing for draft and receipt changes. The caller supplies the event, correlation, and causation IDs and the claim's stored `lastEventVersion`; the actor and time come from the history entry. The change's IDs, versions, and statuses must agree with the domain's transition table. The previous event version is `null` when the stored value is absent or zero, and otherwise a whole number below the new version. The payload holds only the claim, employee, assigned manager, category, and amount, plus `submittedAt`, `reviewedAt`, or `paidBy` and `paidAt` where the event catalog lists them; a change missing a required field raises `ClaimEventError`, whose messages name no values. The same module's `isPublishableAction` is the classifier the DynamoDB claim operation builder uses to decide whether to set `lastEventVersion`.
+
 ### Publisher (stream path)
 
 - **Trigger:** the table stream (`NEW_AND_OLD_IMAGES`) through a Lambda event source mapping with this filter:

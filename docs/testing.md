@@ -236,6 +236,14 @@ Against a fake client that applies the approved condition to an existing item:
 - invalid buckets, receipt IDs, unsanitized file names, and signer output rejected, with fixed messages that expose no bucket, key, ID, or name;
 - the real signer producing a local HTTPS URL with a five-minute expiry, the expected key and disposition, and no S3 command or network request.
 
+## Claim lifecycle events (`services/api/test/claim-events.test.ts`)
+
+- the exact envelope and payload of every lifecycle mapping, and no event for draft-only actions;
+- previous event versions: `null` for the first event, a lower whole number later, and invalid values rejected;
+- inconsistent IDs, versions, statuses, and transitions, invalid generated IDs, and missing manager, category, amount, or required timestamps rejected with messages that name no values;
+- no merchant, purpose, comment, receipt, or name in any payload;
+- every event accepted by the outbox codec, and consistent with the `lastEventVersion` set by the claim transaction builder.
+
 ## HTTP API (`services/api/test/http-api.test.ts`)
 
 The real server on an ephemeral port with per-user cookie sessions:

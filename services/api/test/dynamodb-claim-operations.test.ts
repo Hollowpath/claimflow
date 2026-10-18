@@ -13,6 +13,7 @@ import {
   categoryGuardCheckOperation,
   incrementClaimCountOperation,
 } from '../src/adapters/aws/dynamodb-category-operations.js';
+import { isPublishableAction } from '../src/application/claim-events.js';
 import {
   claimManagerCondition,
   claimOwnerCondition,
@@ -21,7 +22,6 @@ import {
   createClaimOperations,
   deleteDraftOperation,
   draftDeleteCondition,
-  isPublishableAction,
   updateClaimOperations,
 } from '../src/adapters/aws/dynamodb-claim-operations.js';
 import {

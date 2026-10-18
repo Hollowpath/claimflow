@@ -1,6 +1,5 @@
 import { idSchema } from '@claimflow/contracts';
 import {
-  claimActions,
   claimHistoryActions,
   claimTransitions,
   type Claim,
@@ -9,6 +8,7 @@ import {
   type ClaimHistoryAction,
 } from '@claimflow/domain';
 
+import { isPublishableAction } from '../../application/claim-events.js';
 import {
   claimAttributeNames,
   claimKey,
@@ -72,11 +72,6 @@ export class ClaimOperationError extends Error {
     super(`Cannot build the claim operation: ${problem}.`);
     this.name = 'ClaimOperationError';
   }
-}
-
-/** Lifecycle actions publish events; draft and receipt changes do not. */
-export function isPublishableAction(action: ClaimHistoryAction): boolean {
-  return (claimActions as readonly string[]).includes(action);
 }
 
 /**
