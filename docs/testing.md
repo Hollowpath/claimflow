@@ -142,6 +142,7 @@ With a scripted client that records every command, and the shared fake-table tes
 
 - the exact `GetItem` and `Query` inputs for A1 and A5 to A10: keys, index names, consistency, scan direction, and the `limit + 1` look-ahead, with no filter expression;
 - a cursor for the last returned item only, continuation through a partial response with the cursor as start key, and a repeated continuation key refused;
+- `getStored`: the claim and `lastEventVersion` (present, zero, and absent) from one strongly consistent `GetItem` that `get` shares, a missing item, malformed metadata rejected through the codec, invalid IDs rejected before any command, and SDK errors propagated unchanged;
 - missing claims and categories, a direct lookup that returns another claim rejected with a value-free message, and malformed claim, history, and category items rejected through the codecs;
 - invalid client and table name at construction, and invalid IDs, statuses, page limits, missing page requests, and malformed, oversized, or foreign cursors rejected before any command with fixed messages;
 - SDK errors propagated unchanged for every read, only `GetItem` and `Query` sent, only read methods exposed, and the re-export being the same class.
@@ -151,6 +152,7 @@ With a scripted client that records every command, and the shared fake-table tes
 With a scripted client that records every command:
 
 - the exact strongly consistent `GetCommand` key, a missing category, and a decoded domain category without persistence metadata;
+- `getStored`: the category with its `claimCount` and `lastEventVersion` (present, zero, and absent) from one strongly consistent `GetItem` that `get` shares, a missing item, malformed metadata and items under another key rejected through the codec, invalid IDs rejected before any command, and SDK errors propagated unchanged;
 - the exact `QueryCommand` inputs for every page of the category partition (base table, no index, filter, or limit), the order kept across pages, empty pages with a continuation key, and an empty partition;
 - malformed items, items under another key, and items that are not categories rejected through the codec or the requested-key check, and a repeated continuation key refused;
 - an invalid table name rejected at construction and invalid category IDs (empty, blank, key-like, oversized, non-strings) rejected before any command, with fixed messages;
@@ -161,6 +163,7 @@ With a scripted client that records every command:
 
 - the approved example idempotency, claim event, and cleanup event items encoded exactly;
 - completed and rejected idempotency records, including a `204` stored and read back without a body, and refusal of invalid keys, fingerprints, outcomes and statuses, timestamps, TTLs other than exactly 24 hours, and bodies that are not JSON, too deep, too wide, cyclic, or over 300 KB of UTF-8 (tested at the multibyte boundary);
+- result references: `{ status: 201, resultRef: { receiptId } }` encoded exactly with no body, round-tripped, stored without any upload URL or form field, and refused (on encode with `ItemEncodingError`, on decode with `ItemIntegrityError` and fixed messages) when mixed with a body, carrying unknown fields, missing or invalid IDs, not a map, with a status other than 201, or on a rejected record, while snapshots, `204` results, and rejected snapshots are unchanged;
 - every approved event type routed to its aggregate partition and round-tripped while pending and once published, with GSI4 present only while pending and a TTL exactly 7 days after publication;
 - rejection of wrong keys, event types, schema versions, sources, aggregates, previous event versions, payload identities, missing or invalid payload fields, and index attributes;
 - no free-text field in any outbox item, and errors that never echo payload values or malformed keys.
@@ -189,9 +192,178 @@ Against a fake client that applies the approved condition to an existing item:
 - a new record expiring exactly now still written, while an existing record expiring exactly now or later blocks the write and one that expired before now is replaced;
 - `ConditionalCheckFailedException` propagating as the identical object, other SDK errors unchanged, and only `PutCommand` ever sent.
 
+## DynamoDB idempotency coordinator (`services/api/test/dynamodb-idempotency-coordinator.test.ts`)
+
+With injected fakes that share one call log, and no AWS access:
+
+- `lookup`: an absent or expired record as `undefined`, a matching completed or rejected record returned, a different fingerprint refused with the fixed `IdempotencyConflictError`, stored records returned as stored, and reader errors propagated unchanged;
+- `recordRejection`: one write and the record returned on success; after a `ConditionalCheckFailedException` exactly one strongly consistent reread, returning a concurrent success or rejection with the same fingerprint, refusing another fingerprint, and rethrowing the identical original failure when no unexpired record is found;
+- the conditional failure recognized by SDK error name and not by message, unrelated writer errors and non-error rejections propagated unchanged without a reread, and reread errors propagated unchanged;
+- invalid actors, keys, fingerprints, times, and rejection records (missing, completed, malformed, wrongly timed, or expired) rejected before any dependency call, with messages that never echo supplied values;
+- result references returned intact from a lookup and from a lost rejection race, a conflict that does not expose the reference, and a reference refused as the rejection to store;
+- invalid construction and only `lookup` and `recordRejection` exposed.
+
+## Receipt upload replay resolver (`services/api/test/receipt-upload-replay-resolver.test.ts`)
+
+With fake metadata and form dependencies sharing one call log, and the real form generator over a fake signer for the conditions:
+
+- one metadata read followed by one form creation for the very same pending record, repeated replays each issuing a fresh form for the same receipt, and the original upload conditions (key, content type, exact size, checksum) identical across replays;
+- the expiry boundaries: a record and a receipt expiring exactly now are accepted, and ones that expired a second ago are refused (the record before any read, the receipt without a form);
+- missing, attached, replaced, foreign, and mismatched receipts refused with the existing `RECEIPT_UNAVAILABLE` error or a fixed integrity error that names no value, and never with a form;
+- snapshots, rejected records, missing records, malformed references, codec-invalid records, and invalid times refused before any call, with messages that never echo supplied values;
+- metadata and form errors propagated unchanged, with no retry.
+
+## DynamoDB idempotent transaction committer (`services/api/test/dynamodb-idempotent-transaction-committer.test.ts`)
+
+With fake executor and lookup dependencies sharing one call log, and transactions built by the real composer:
+
+- a success sending the supplied transaction once and returning its completed record, including a result reference;
+- a cancellation resolved by a concurrent completed, rejected, or reference winner returned intact, a fingerprint conflict propagated, no winner rethrowing the identical cancellation without a retry, no cancellation reason inspected, and lookup errors propagated unchanged;
+- every ambiguous error name and transport code resolved by a winner from the first lookup, or retried once with the identical transaction object and token; a final lookup after a cancelled or ambiguous retry returning a winner or rethrowing the retry failure unchanged, conflicts and lookup errors propagated, a non-ambiguous retry failure propagated without a lookup, and never more than two executions;
+- validation, token, programming, access, unknown, message-only, and unrelated transport failures propagated unchanged without a lookup or retry;
+- an expired record rejected before any call and a record expiring exactly now accepted;
+- invalid or tampered transactions (extra input, wrong or missing token, changed business items, a record that differs from the final idempotency item, a changed condition, an uncanonicalizable payload), invalid records, and invalid times rejected before any call, with messages that never echo supplied values.
+
+## Receipt upload coordinator (`services/api/test/receipt-upload-coordinator.test.ts`)
+
+With fake dependencies sharing one call log, and the real upload writer as the preparer once:
+
+- first creation: lookup, one preparation with no events or guard, one commit of the prepared transaction, then resolution of the winning record;
+- a stored reference replayed without preparing or committing, stored and concurrent snapshots and rejections returned intact without the resolver, and a winning reference to another receipt resolved instead of the candidate;
+- fingerprint conflicts, lookup, preparation, commit, and resolver errors propagated unchanged without further calls;
+- a signing failure after the commit followed by a successful retry that recovers through the lookup, with no second preparation or commit;
+- invalid, expired (the exact boundary accepted), foreign, non-pending, or mismatched candidates and results rejected before any call, with messages that never echo supplied values.
+
+## Claim mutation coordinator (`services/api/test/claim-mutation-coordinator.test.ts`)
+
+With fake lookup and committer dependencies sharing one call log, and once with the real claim writer's `prepareCreate` and the real committer over a recording executor:
+
+- first execution in the order lookup, one preparation, one commit of the exact prepared transaction and completed request, and a stored record or concurrent winner (including a rejection) returned intact;
+- a stored record returned without preparing or committing, and a fingerprint conflict propagated without preparing;
+- invalid requests and missing callbacks rejected before any call, and completed results that are for another actor, key, or fingerprint, expired (the exact boundary accepted), a receipt reference, missing, or refused by the codec rejected before committing, with messages that never echo supplied values;
+- preparation, lookup, and commit errors propagated unchanged with no retry;
+- the integration case sending one real transaction, and none when a result is already stored;
+- prepared rejections: one `recordRejection` call after the lookup and one preparation and no commit, the returned record (including a concurrent completed or rejected winner) passed back intact, replay and lookup conflicts skipping preparation, rejection-race conflicts and unresolved conditional failures propagated unchanged without another lookup or retry;
+- rejections refused before any write when completed, for another actor, key, or fingerprint, rejected by the codec (success status, reference, malformed fields), expired (exactly now accepted), or mixed with a transaction or completed request, with messages that never echo supplied values, and the success path unchanged.
+
+## AWS claim creation service (`services/api/test/aws-claim-creation-service.test.ts`)
+
+With fake category, user, and ID dependencies, and the real domain rules, claim writer preparation, mutation coordinator, idempotency coordinator, and transaction committer over an in-memory store and a recording executor:
+
+- categorized and uncategorized success: the transaction items, a category guard at the version read, no event or outbox item, the derived 24-hour expiry, and a stored `201` body equal to what the existing `ClaimService` create returns;
+- replay returning the stored record (completed or rejected) with no category read, user read, ID generation, parsing, or commit, and a different fingerprint refused;
+- schema, domain, and client-error rejections stored with the safe mapping and request ID, with no commit, and the identity taken only from the actor (a smuggled `employeeId` is rejected);
+- a lost commit race and a lost rejection race returning the actual winner;
+- category, user, ID, preparation, codec, and non-ambiguous transaction failures propagated unchanged, with nothing stored as a rejection;
+- invalid actors and request contexts refused before any dependency call, with messages that never echo supplied values;
+- cancellation recovery with injected sleep, random source, claim reader, and logger: uncategorized and categorized retries after unchanged state with the same claim ID and a stable token; the exact cap of three commits, with the final check returning a winner, rethrowing the last cancellation unchanged, persisting `VERSION_CONFLICT` only for a category that changed again, and for a category changed for the first time at exhaustion persisting the normal rejection for a missing or inactive category or rethrowing the cancellation (with no fourth commit and no presentation rebuilt) for a still valid one; backoff delays that are exponential, jittered, and bounded whatever the random source returns, and absent when nothing is recovered; logs that carry only the operation and retry counts, with a distinct exhaustion event; a changed but valid category rebuilt with a new guard and token, a deactivated or deleted category persisted as the normal rejection, a second change persisted as `VERSION_CONFLICT`, and a rebuild counted toward the cap; a claim-ID collision (during recovery or at the final check) refused with a fixed integrity error and nothing stored; winners and fingerprint conflicts found by every recheck; and claim, category, presentation, preparation, sleep, and final-check failures propagated unchanged with nothing stored.
+
+## AWS claim draft editing service (`services/api/test/aws-claim-draft-editing-service.test.ts`)
+
+With fake claim, category, and user dependencies, and the real domain rules, claim writer preparation, mutation coordinator, idempotency coordinator, and transaction committer over an in-memory store and a recording executor:
+
+- categorized and uncategorized edits with the stored `lastEventVersion` preserved (or absent), category add, remove, and switch with the matching counter operations and a guard at the version read, an unchanged inactive category edited without being read, and a stored `200` body equal to what the existing `ClaimService` update returns;
+- replay returning the stored record (completed or rejected) with no claim, category, or user read and no domain work, and a different fingerprint refused;
+- a missing and an invisible claim giving identical `NOT_FOUND` rejections, and invalid IDs, invalid or smuggled input, stale versions, non-owners, non-drafts, and unknown or inactive entered categories stored as business rejections with no commit;
+- a lost commit race, a lost rejection race, and a winner found up front returning the actual winner;
+- claim, category, user, preparation, and codec failures, and an unresolved cancellation, propagated unchanged with nothing stored as a rejection;
+- invalid actors and request contexts refused before any dependency call;
+- cancellation recovery with injected sleep, random source, and logger: unchanged-state retries that keep the expected version, inputs, event version, and token, the exact cap of three commits with the cancellation rethrown unchanged, bounded jittered delays, logs of only the operation and retry counts, and no recovery of other errors or inspection of cancellation reasons; a claim that disappears, becomes invisible, or is at a newer version stored as `NOT_FOUND` or `VERSION_CONFLICT` without applying the edit; destination changes rebuilt with a new guard and token, deactivated or deleted destinations stored as the normal rejection, a second change stored as `VERSION_CONFLICT`, and the terminal first-change versus repeated-change distinction at exhaustion; a missing or zero source counter refused with a fixed integrity error, during recovery and at the final check, with nothing stored; winners and fingerprint conflicts found by each recheck; and claim, category, presentation, preparation, and sleep failures propagated unchanged.
+
+## AWS claim submission and lifecycle services (`services/api/test/aws-claim-lifecycle-service.test.ts`, `services/api/test/aws-claim-submission-service.test.ts`)
+
+With fake claim, category, user, and ID dependencies, and the real domain rules, event builder, claim writer preparation, mutation coordinator, idempotency coordinator, and transaction committer over an in-memory store and a recording executor:
+
+- every one of the six actions: the transaction shape (SUBMIT with the update, history, category `ConditionCheck` at the version read, event, and idempotency item; the others with no category operation), the owner, manager, or version-only write condition, the lifecycle event with the supplied correlation ID, the request ID as causation ID, and the version chain, one generated event ID, and a stored `200` body equal to what the existing `ClaimService.perform` returns;
+- replay returning the stored record with no claim, category, or user read, no ID generated, and no domain work; identical `NOT_FOUND` for missing and invisible claims; stale versions and smuggled input stored as rejections;
+- the domain rules as business rejections: required decision comments, a manager who is not assigned, self-review, payment by a non-administrator or by the claim owner, the wrong status, reopening by a non-owner, and the submission rules (manager, receipt, limits, category);
+- lost commit and rejection races and winners found by each recheck returned, and fingerprint conflicts propagated;
+- cancellation recovery for all actions: retries after unchanged state with a stable event ID and token and bounded jittered delays, the cap of three commits with the cancellation rethrown unchanged and a distinct exhaustion log, a disappearing, invisible, or newer claim stored as `NOT_FOUND` or `VERSION_CONFLICT` without applying the action, and for SUBMIT the category rebuild, the normal rejection for a deactivated or deleted category, `VERSION_CONFLICT` for a repeated change, and the terminal first-change versus repeated-change distinction; other errors and cancellation reasons never recovered or inspected;
+- claim, category, user, ID, event-building, preparation, sleep, and codec failures propagated unchanged with nothing stored as a rejection;
+- the submission entry point delegating to the lifecycle service, and invalid actors, actions, and request contexts refused before any dependency call.
+
+## AWS claim creation through the request pipeline (`services/api/test/aws-claim-creation-api.test.ts`)
+
+Through `createApiHandler` with the real AWS routes and the real `AwsClaimCreationService`, mutation coordinator, idempotency coordinator, claim writer, and committer over fake AWS dependencies:
+
+- a created claim returned as the stored `201` response with the standard request and correlation headers, no replay header, a stored record with the pipeline's fingerprint and time, and no use of the local idempotency or create handler;
+- replay returning the stored response without a second commit or any category read, a different body under the same key giving `IDEMPOTENCY_CONFLICT`, and a persisted business rejection returned with its original request ID and replayed unchanged;
+- unauthenticated and unknown-subject requests, missing or invalid idempotency keys, oversized and malformed bodies refused before the mutation, and the mutation receiving the actor, parsed body, key, fingerprint, time, and request and correlation IDs;
+- an infrastructure failure becoming a generic `500` that leaks no detail, stores nothing, is logged once, and does not fall back to the local path; request logs that omit the body, key, and fingerprint; and a result reference refused;
+- the default behavior: without an entry, and for other operations, the route handler and the local idempotency are used.
+
+## AWS claim edit and lifecycle through the request pipeline (`services/api/test/aws-claim-mutations-api.test.ts`)
+
+Through `createApiHandler` with the real AWS routes and the real editing and lifecycle services, mutation coordinator, idempotency coordinator, claim writer, and committer over fake AWS dependencies:
+
+- `PATCH /claims/:claimId` and each of the six action routes dispatched to the right service and action, with the stored `200` response, the lifecycle event (type, actor, correlation and causation IDs, version), the category guard only for submission, and no use of the local handlers or idempotency;
+- replay returning the stored response with no second commit or claim read and no replay claim in the response headers or request log;
+- the claim ID taken only from the route and the action only from the registration, with a body-supplied claim ID, action, status, or identity refused before any commit;
+- missing, invisible, stale, unauthenticated, and unauthorized requests keeping their existing responses, and infrastructure failures becoming a generic `500` that leaks nothing and does not fall back to the local path;
+- the seam receiving decoded route parameters, operations without a registration staying local, and a result reference refused.
+
+## AWS claim reads through the request pipeline (`services/api/test/aws-claim-reads-api.test.ts`)
+
+Through `createApiHandler` with the real AWS routes, `claimReadOperations`, `ClaimQueryService`, and `DynamoDbClaimReader` over a small fake table that serves keyed gets and pre-ordered pages with real paging:
+
+- each of the five reads dispatched to the right key or index and partition (`GSI1` employee, `GSI2` review queue, `GSI3` status, `GSI4` all, and the claim partition for history), with responses equal to the local `ClaimQueryService` over plain claims, and no use of the local handlers;
+- invisible, missing, and malformed claims giving identical `NOT_FOUND`, the history of an invisible claim never queried, and the assigned manager and administrator seeing a submitted claim;
+- cursor pagination across pages without skips or repeats, role restrictions (`403` for the wrong role), invalid limits, statuses, and foreign cursors rejected before any read, and authentication required for every read;
+- dependency failures becoming a generic `500` that leaks nothing and never reaches the local handler, unregistered operations and the default configuration staying local.
+
+## AWS receipt upload target flow (`services/api/test/aws-receipt-upload-target-service.test.ts`)
+
+With the real `ReceiptUploadCoordinator`, upload writer preparation, idempotency coordinator, committer, replay resolver, and upload-form generator over an in-memory store and a recording executor, and a fake signer:
+
+- a new target: pending metadata owned by the actor with a sanitized file name, the declared values, and a 24-hour expiry, committed atomically with an idempotency reference, one generated ID, one signed form for `uploads/pending/<id>`, and nothing about the URL or form persisted; size boundaries accepted;
+- replay returning the same receipt with a different fresh form and no new ID, preparation, or commit, a stored rejection replayed without a form, and a different fingerprint refused;
+- non-employees stored as `FORBIDDEN`, and unsupported types, bad sizes and checksums, missing, empty, and unknown fields, and any smuggled owner, identity, ID, or time stored as validation rejections, all with no ID generated and no commit;
+- a lost commit race resolving the concurrent winner's receipt, and a concurrent rejection returned intact without a form;
+- a signing failure after the commit keeping the metadata and a retry recovering without a second commit, and ID-generator, invalid-ID, and non-ambiguous transaction failures propagated with nothing stored as a rejection;
+- invalid actors and request contexts refused before any dependency call;
+- the coordinator's lazy `run` (`services/api/test/receipt-upload-coordinator.test.ts`): lookup before preparation, a stored record skipping preparation, explicit rejections stored without a commit or form, a rejection race resolving a winning reference, and mixed, mismatched, expired, and malformed preparations or requests refused.
+
+## AWS receipt attachment and replacement flow (`services/api/test/aws-receipt-attachment-service.test.ts`)
+
+With the real mutation coordinator, idempotency coordinator, committer, and claim writer preparation over an in-memory store and a recording executor, and fake claim, receipt, inspector, and object dependencies that log every call:
+
+- an attachment in the documented order (claim, receipt, inspect, promote, commit, pending deletion) with the claim, history, receipt, and idempotency items; a replacement retiring the old receipt with its 30-day expiry and the cleanup event for the old object, one generated event ID, and deletion of only the new pending object;
+- replay returning the stored snapshot with no read, inspection, promotion, or deletion, and a different fingerprint refused;
+- identical `NOT_FOUND` for missing, invisible, and malformed claims, stale versions rejected before any receipt is read, invalid and smuggled input rejected before any read, `FORBIDDEN` for a non-owner and `CLAIM_NOT_EDITABLE` for a non-draft before any receipt is touched;
+- missing, already attached, foreign, and expired receipts, objects the inspector cannot verify, and objects that vanish before promotion stored as `RECEIPT_UNAVAILABLE`, an expiry exactly now accepted, and declared size, type, or checksum mismatches rejected without promotion;
+- an old receipt record that is missing, not attached, or for another claim refused with a fixed integrity error before any inspection;
+- a lost commit race and a recovery recheck returning the winner, deleting the pending object only when the winner holds this call's receipt, and fingerprint conflicts propagated;
+- cancellation recovery: unchanged-state retries that re-inspect and re-promote with a stable token and cleanup event ID, bounded jittered delays and safe logs, the cap of three commits with the cancellation rethrown unchanged and nothing deleted, a changed claim or receipt stored as `VERSION_CONFLICT`, `NOT_FOUND`, or `RECEIPT_UNAVAILABLE`, and the final checks at exhaustion;
+- claim, receipt, inspection, promotion, user, and non-ambiguous transaction failures propagated unchanged with nothing stored or deleted, a promoted object kept when the transaction fails, and a failed best-effort deletion logged without detail while the result is still returned;
+- invalid actors and request contexts refused before any dependency call.
+
+## AWS removal flows (`services/api/test/aws-claim-removal-services.test.ts`)
+
+With the real mutation coordinator, idempotency coordinator, committer, and claim writer preparation over an in-memory store and a recording executor, and fake claim, receipt, category, and user dependencies:
+
+- receipt removal returning the updated claim with claim, history, receipt, cleanup event, and idempotency items committed atomically, with or without a category (never touched);
+- draft deletion for every category and receipt combination: at most six operations in the documented order, a `204` result with no body, no history item, a purge event and, with a receipt, a receipt-deletion event at the next claim version with distinct IDs, and no S3 or purge capability in either service;
+- replay with no reads or generated IDs, identical `NOT_FOUND` for missing and invisible claims, and the domain rules as business rejections (no receipt, non-owner, non-draft, once-submitted, stale version, bad input);
+- receipt records that are missing, not attached, or for another claim or owner, and category counters that are missing or zero, refused with a fixed integrity error and nothing stored, during the first attempt, recovery, and the final check;
+- a lost commit race and a recovery recheck returning the winner and fingerprint conflicts propagated;
+- cancellation recovery: unchanged-state retries with stable tokens and event IDs and bounded jittered delays, the cap of three commits with the cancellation rethrown unchanged and a distinct exhaustion log, a claim that disappears, becomes invisible, or moves on stored as `NOT_FOUND` or `VERSION_CONFLICT`, and the final checks at exhaustion;
+- claim, receipt, preparation, and sleep failures and non-ambiguous transaction failures propagated unchanged with nothing stored, and invalid actors and request contexts refused before any dependency call.
+
+## AWS receipt flows through the request pipeline (`services/api/test/aws-receipt-api.test.ts`)
+
+Through `createApiHandler` with the real AWS routes and the real attachment, removal, deletion, and download services over fake AWS dependencies:
+
+- `PUT /claims/:claimId/receipt` attaching and replacing (with the cleanup event for the old object) and returning the stored `200` claim, deleting only the pending object afterwards; `DELETE /claims/:claimId/receipt` returning the updated claim with its cleanup event; and `DELETE /claims/:claimId` returning `204` with no body, writing the purge and receipt events, touching no object or history, and staying within six operations;
+- replay returning the stored result with no second commit, inspection, promotion, or deletion;
+- the claim ID taken only from the route (a body claim ID is refused), and stale versions, invisible, missing, unavailable-receipt, unauthorized, submitted-claim, and unauthenticated requests keeping their existing responses;
+- `GET /claims/:claimId/receipt` returning `{ url, expiresAt }` with `no-store` for the owner, the assigned manager, and an administrator, signing `receipts/<id>` with the file name, a stranger or a missing claim giving the same `NOT_FOUND`, and records that contradict the claim never yielding a URL;
+- infrastructure failures (claim, signer) becoming a generic `500` that leaks nothing, with nothing deleted and no local handler used;
+- the defaults: with nothing registered every operation, including the local binary download, stays local, registered operations never fall back, and unregistered ones stay local.
+
 ## DynamoDB transaction envelope (`services/api/test/dynamodb-transaction.test.ts`)
 
 - an exact transaction of business operations, a pending outbox `Put`, and the completed idempotency `Put`, in that order, with their condition expressions;
+- a result reference stored as the idempotency item without a body, a deterministic token that differs from the snapshot form, and malformed references refused before anything is built;
 - `204` responses stored without a body, zero and several events in order, and invalid responses and events rejected through the codecs;
 - tokens stable for rebuilt identical inputs, changed by any business value, event, response, or order, and never part of their own hashed payload;
 - rejection of empty business items, wrong tables, malformed or unsupported operations and keys, duplicate targets including collisions with outbox and idempotency items, and more than 100 operations, with exactly 100 accepted;
@@ -212,6 +384,44 @@ Against a fake client that applies the approved condition to an existing item:
 - owner, manager, and version-only conditions for every history action, and `lastEventVersion` set by lifecycle actions and preserved by draft and receipt changes;
 - refused mismatched IDs, versions, statuses, and transitions, `CREATE` or unknown actions, invalid or overflowing versions, and deletes of submitted, reopened, or foreign drafts;
 - use with category operations and the transaction composer, no free text in keys, conditions, or errors, and no DynamoDB command sent.
+
+## DynamoDB receipt upload writer (`services/api/test/dynamodb-receipt-upload-writer.test.ts`)
+
+With a recording executor, and the real executor over a fake client:
+
+- the exact composed transaction, the pending receipt item followed by the completed idempotency item, and no outbox item;
+- `preparePending` returning synchronously the exact transaction that `createPending` sends, sending nothing, and validating before returning;
+- a result reference stored with the pending receipt in the same transaction, with no upload URL or form field persisted, a deterministic token different from the snapshot form, and malformed references refused before any command;
+- the deterministic request token of the composer: stable across repeats and changed by the record;
+- a missing idempotency record, any event, a category guard, and missing or malformed options rejected before any command;
+- invalid pending records (state, ID, size, content type, checksum, expiry) and invalid idempotency data rejected before any command, with no supplied or stored value in the messages;
+- invalid executors and table names rejected at construction;
+- exactly one `TransactWriteCommand` per valid write, executor and SDK errors propagated unchanged without a retry, and only the creation method exposed.
+
+## DynamoDB claim writer (`services/api/test/dynamodb-claim-writer.test.ts`)
+
+With a recording executor, and the real executor over a fake client:
+
+- for every mutation, the synchronous `prepare…` method returns the exact transaction that the write method then sends, deterministically, executes nothing, and refuses invalid input before any execution;
+- the exact composed transaction for a categorized claim (claim, first history entry, guarded counter increment, idempotency record, with no `ConditionCheck`) and for an uncategorized claim (no counter operation);
+- the deterministic request token of the composer: stable across repeats and changed by the guard version;
+- missing options, events, a missing idempotency record, a missing, unexpected, mismatched, or inactive-allowing category guard, and invalid claims, history, guards, and idempotency data rejected before any command, with no supplied value in the messages;
+- invalid executors and table names rejected at construction, and only the creation and draft-edit methods exposed;
+- exactly one `TransactWriteCommand` per valid write, and executor and SDK errors propagated unchanged without a retry;
+- `updateDraft`: an unchanged category with no counter operation, adding, removing, and switching categories in the order update, history, decrement, increment, idempotency (no `ConditionCheck`), the expected version taken from the previous claim and `lastEventVersion` preserved, and a deterministic token changed by the guard;
+- `updateDraft` rejected before any command for missing inputs, events, a missing idempotency record, non-`UPDATE` actions, non-draft claims, mismatched claims or owners, a guard that is missing, unexpected, mismatched, or not requiring an active category, and invalid versions, history, or idempotency data, with no supplied value in the messages;
+- `updateLifecycle` for `START_REVIEW`, `APPROVE`, `REJECT`, `REOPEN`, and `MARK_PAID` in the order update, history, outbox event, idempotency, with the manager, owner, or version-only write condition, the expected version taken from the previous claim, `lastEventVersion` advanced, the event chained to the stored event version, and a deterministic token changed by the event;
+- `updateLifecycle` rejected before any command for `SUBMIT`, draft and receipt actions, mismatched claims, owners, categories, or previous status, a guard, a missing idempotency record, and no, extra, or mismatched events (type, actor, time, aggregate version, version chain, payload, extra fields, and non-canonical values), with no supplied value in the messages;
+- `submit` for a first submission and a resubmission after reopening in the order update, history, category `ConditionCheck`, outbox event, idempotency, with the owner and expected-version condition, the guard values, no counter write, `lastEventVersion` advanced, the event chained to the stored event version, and a deterministic token changed by the guard or event;
+- `submit` rejected before any command for other actions, mismatched claims, owners, or categories, uncategorized or non-draft claims, a missing, mismatched, or inactive-allowing guard, a missing idempotency record, and no, extra, or mismatched events, with no supplied value in the messages;
+- `attachReceipt` in the order claim update, history, receipt update, idempotency, with the owner and expected-version claim condition, the pending-to-attached receipt condition, the claim and receipt linked by claim ID, owner, and receipt values, the stored event version kept, no counter, check, or outbox item, and a deterministic token changed by the event version or idempotency key;
+- `attachReceipt` rejected before any command for other actions, non-draft, mismatched, or already-receipted claims, a claim without a receipt, receipts for another claim, owner, or actor, claim receipt values or attachment times that differ from the attached record, a guard, events, a missing idempotency record, and invalid records or versions, with no supplied value in the messages;
+- `replaceReceipt` in the order claim update, history, new receipt attachment, old receipt retirement, cleanup event, idempotency, with the owner and expected-version, attach, and retire conditions, the old receipt retired with a TTL 30 days after the history time, the cleanup event targeting only the old object with `previousEventVersion` `null`, the stored event version kept, and a deterministic token changed by the event or event version;
+- `replaceReceipt` rejected before any command for other actions, non-draft or mismatched claims, missing or identical receipts, old records that do not match the previous claim or are not `REPLACED`, new records for another claim, owner, or actor or with differing values or attachment time, a guard, a missing idempotency record, and no, extra, or mismatched cleanup events (target, type, actor, time, version, sequence, extra fields), with no supplied value in the messages;
+- `removeReceipt` in the order claim update, history, receipt retirement, cleanup event, idempotency, with the claim receipt attribute removed, the owner and expected-version and retire conditions, the receipt retired as `REMOVED` with a TTL 30 days after the history time, the cleanup event targeting only the removed object with `previousEventVersion` `null`, the stored event version kept, and a deterministic token changed by the event or event version;
+- `removeReceipt` rejected before any command for other actions, non-draft or mismatched claims, a missing previous receipt, a receipt kept on the changed claim, attached records that differ from the previous receipt, claim, owner, or actor, a record not retired as `REMOVED`, a guard, a missing idempotency record, and no, extra, or mismatched cleanup events, with no supplied value in the messages;
+- `deleteDraft` for a draft with and without a category and with and without a receipt, in the order claim delete, counter decrement, receipt retirement, purge event, receipt-deletion event, idempotency (at most six operations, no history item, no `ConditionCheck`), with the owner, version, and never-submitted delete condition, the receipt retired as `REMOVED` with a TTL 30 days after the deletion time, both cleanup events at the next claim version outside the published sequence, and a deterministic token changed by an event;
+- `deleteDraft` rejected before any command for invalid or early deletion times, an unadvanceable version, receipt records that are missing, unexpected, or differ from the claim receipt or are not `REMOVED`, submitted, reopened, foreign, or invalid drafts, a guard, a missing idempotency record, and wrong counts, order, duplicate IDs, mismatched targets, versions, actors, times, or extra fields in the cleanup events, with no supplied value in the messages.
 
 ## DynamoDB receipt operations (`services/api/test/dynamodb-receipt-operations.test.ts`)
 

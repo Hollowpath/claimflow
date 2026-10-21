@@ -12,6 +12,7 @@ import {
   categoryKey,
   decodeCategoryItem,
   ItemIntegrityError,
+  type StoredCategory,
 } from './dynamodb-items.js';
 import type {
   DynamoDbReaderOptions,
@@ -22,8 +23,9 @@ import type {
  * The read side of the DynamoDB category repository
  * (docs/aws-architecture.md, section 6, access patterns C1 and C2). It sends
  * only `GetItem` and `Query`, never `Scan`, and decodes every item with the
- * category codec. Writes are a later increment. Validation errors are fixed
- * messages that name no value; SDK and codec errors propagate unchanged.
+ * category codec. Category writes live in the separate
+ * `DynamoDbCategoryWriter`. Validation errors are fixed messages that name no
+ * value; SDK and codec errors propagate unchanged.
  */
 
 type CategoryReads = Pick<CategoryRepository, 'get' | 'list'>;
@@ -42,6 +44,17 @@ export class DynamoDbCategoryReader implements CategoryReads {
 
   /** C1: one strongly consistent `GetItem`; a missing category is `undefined`. */
   public async get(categoryId: string): Promise<Category | undefined> {
+    return (await this.getStored(categoryId))?.category;
+  }
+
+  /**
+   * C1 with the persistence metadata: the category and its `claimCount` and
+   * `lastEventVersion` from the same strongly consistent `GetItem`, returned
+   * as decoded. Nothing is inferred when `lastEventVersion` is absent.
+   */
+  public async getStored(
+    categoryId: string,
+  ): Promise<StoredCategory | undefined> {
     if (!idSchema.safeParse(categoryId).success) {
       throw new TypeError('The category ID is not valid.');
     }
@@ -55,15 +68,15 @@ export class DynamoDbCategoryReader implements CategoryReads {
     if (output.Item === undefined) {
       return undefined;
     }
-    const { category } = decodeCategoryItem(output.Item);
+    const stored = decodeCategoryItem(output.Item);
     // The ID was validated, so the key below names no unchecked value.
-    if (category.categoryId !== categoryId) {
+    if (stored.category.categoryId !== categoryId) {
       throw new ItemIntegrityError(
         `CATEGORIES / CATEGORY#${categoryId}`,
         'the item is not the requested category',
       );
     }
-    return category;
+    return stored;
   }
 
   /**

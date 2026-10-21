@@ -60,9 +60,62 @@ export type AuthenticationResolver = (
 /** Processes one API request. It never rejects; failures become responses. */
 export type ApiHandler = (request: ApiRequest) => Promise<ApiResponse>;
 
+/**
+ * What the pipeline hands to an opt-in idempotent mutation: the authenticated
+ * actor, the parsed JSON body, the validated idempotency key, the existing
+ * request fingerprint, and the server-generated time and IDs.
+ */
+export interface IdempotentMutationRequest {
+  readonly actor: Actor;
+  /** The decoded path parameters of the matched route, never the body. */
+  readonly params: Readonly<Record<string, string>>;
+  readonly body: unknown;
+  readonly idempotencyKey: string;
+  readonly fingerprint: string;
+  /** The canonical time of the request (`toISOString`). */
+  readonly now: string;
+  readonly requestId: string;
+  readonly correlationId: string;
+}
+
+/**
+ * An idempotent mutation that owns its own idempotency handling and returns
+ * the winning stored response. The pipeline then does not run the route
+ * handler or the local `Idempotency`, and it cannot tell whether the request
+ * committed or replayed, so it sets no replay header.
+ */
+export type IdempotentMutation = (
+  request: IdempotentMutationRequest,
+) => Promise<StoredResponse>;
+
+/** What the pipeline hands to an opt-in read: the actor, path, and query. */
+export interface ReadOperationRequest {
+  readonly actor: Actor;
+  /** The decoded path parameters of the matched route. */
+  readonly params: Readonly<Record<string, string>>;
+  readonly query: Readonly<Record<string, string>>;
+}
+
+/** A read that replies like the route handler it replaces. */
+export type ReadOperation = (request: ReadOperationRequest) => Promise<Reply>;
+
 export interface ApiHandlerOptions {
   readonly routes: readonly Route[];
   readonly authenticate: AuthenticationResolver;
+  /**
+   * Opt-in mutations by route operation (for example `claim.create`). An
+   * operation without an entry keeps the route handler and the local
+   * idempotency; there is no fallback from an entry to the local path.
+   */
+  readonly mutations?: Readonly<Record<string, IdempotentMutation>>;
+  /**
+   * Opt-in reads by route operation (for example `claim.get`), for routes
+   * that are not idempotent. A registered read replaces the route handler and
+   * never falls back to it; an operation without an entry is unchanged.
+   */
+  readonly reads?: Readonly<Record<string, ReadOperation>>;
+  /** The clock for mutations; defaults to the system time. */
+  readonly now?: () => Date;
 }
 
 interface CompiledRoute {
@@ -81,15 +134,16 @@ export function createApiHandler(
   options: ApiHandlerOptions,
 ): ApiHandler {
   const routes = options.routes.map(compile);
-  return (request) => handle(app, routes, options.authenticate, request);
+  return (request) => handle(app, routes, options, request);
 }
 
 async function handle(
   app: Pick<Application, 'idempotency' | 'logger'>,
   routes: readonly CompiledRoute[],
-  authenticate: AuthenticationResolver,
+  options: ApiHandlerOptions,
   request: ApiRequest,
 ): Promise<ApiResponse> {
+  const authenticate = options.authenticate;
   const started = performance.now();
   const requestId = randomUUID();
   const incomingCorrelation = headerValue(request, headers.correlationId);
@@ -105,7 +159,8 @@ async function handle(
     path === undefined ? undefined : findRoute(routes, method, path);
   let actorId: string | undefined;
   let reply: Reply;
-  let replayed = false;
+  // `undefined` when an opted-in mutation ran: it cannot tell replay from commit.
+  let replayed: boolean | undefined = false;
   let failure: unknown;
 
   try {
@@ -151,27 +206,52 @@ async function handle(
         )
         .update(raw)
         .digest('hex');
-      const result = await app.idempotency.run(
-        actor.userId,
-        key.data,
-        fingerprint,
-        async (): Promise<StoredResponse> => {
-          try {
-            const { status, body } = await route.handle(context);
-            return { status, body };
-          } catch (error) {
-            const errorReply = toErrorReply(error, requestId);
-            if (errorReply.status >= 500) {
-              throw error;
+      const mutation = options.mutations?.[route.operation];
+      if (mutation !== undefined) {
+        replayed = undefined;
+        const stored = await mutation({
+          actor,
+          params,
+          body: context.body,
+          idempotencyKey: key.data,
+          fingerprint,
+          now: (options.now?.() ?? new Date()).toISOString(),
+          requestId,
+          correlationId,
+        });
+        reply = { status: stored.status, body: stored.body };
+      } else {
+        const result = await app.idempotency.run(
+          actor.userId,
+          key.data,
+          fingerprint,
+          async (): Promise<StoredResponse> => {
+            try {
+              const { status, body } = await route.handle(context);
+              return { status, body };
+            } catch (error) {
+              const errorReply = toErrorReply(error, requestId);
+              if (errorReply.status >= 500) {
+                throw error;
+              }
+              return errorReply;
             }
-            return errorReply;
-          }
-        },
-      );
-      replayed = result.replayed;
-      reply = result.response;
+          },
+        );
+        replayed = result.replayed;
+        reply = result.response;
+      }
     } else {
-      reply = await route.handle(context);
+      const read = options.reads?.[route.operation];
+      if (read === undefined) {
+        reply = await route.handle(context);
+      } else {
+        // A registered read never falls back to the route handler.
+        if (actor === undefined) {
+          throw new UnauthenticatedError();
+        }
+        reply = await read({ actor, params, query: request.query });
+      }
     }
   } catch (error) {
     failure = error;
@@ -189,7 +269,7 @@ async function handle(
     status: reply.status,
     outcome:
       reply.status >= 500 ? 'error' : reply.status >= 400 ? 'rejected' : 'ok',
-    replayed,
+    ...(replayed === undefined ? {} : { replayed }),
     durationMs: Math.round(performance.now() - started),
   };
   if (reply.status >= 500) {
@@ -204,7 +284,7 @@ async function handle(
   return toResponse(reply, {
     [headers.requestId]: requestId,
     [headers.correlationId]: correlationId,
-    ...(replayed ? { 'Idempotent-Replayed': 'true' } : {}),
+    ...(replayed === true ? { 'Idempotent-Replayed': 'true' } : {}),
   });
 }
 

@@ -24,6 +24,7 @@ import {
   decodeClaimItem,
   decodeHistoryItem,
   ItemIntegrityError,
+  type StoredClaim,
 } from './dynamodb-items.js';
 import {
   checkReaderOptions,
@@ -64,6 +65,16 @@ export class DynamoDbClaimReader implements ClaimReads {
 
   /** A1: strongly consistent `GetItem` for the requested claim only. */
   public async get(claimId: string): Promise<Claim | undefined> {
+    return (await this.getStored(claimId))?.claim;
+  }
+
+  /**
+   * A1 with the persistence metadata: the claim and its `lastEventVersion`
+   * from the same strongly consistent `GetItem`, for write orchestration. The
+   * stored value is returned as decoded; nothing is inferred when the
+   * attribute is absent.
+   */
+  public async getStored(claimId: string): Promise<StoredClaim | undefined> {
     checkId(claimId, 'claim');
     const output = await this.client.send(
       new GetCommand({
@@ -75,8 +86,8 @@ export class DynamoDbClaimReader implements ClaimReads {
     if (output.Item === undefined) {
       return undefined;
     }
-    const { claim } = decodeClaimItem(output.Item);
-    if (claim.claimId !== claimId) {
+    const stored = decodeClaimItem(output.Item);
+    if (stored.claim.claimId !== claimId) {
       // The ID was validated, so the key names no unchecked value.
       const { PK, SK } = claimKey(claimId);
       throw new ItemIntegrityError(
@@ -84,7 +95,7 @@ export class DynamoDbClaimReader implements ClaimReads {
         'the item is not the requested claim',
       );
     }
-    return claim;
+    return stored;
   }
 
   /**

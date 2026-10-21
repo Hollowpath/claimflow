@@ -31,7 +31,7 @@ export interface Names {
  */
 export async function loadNames(
   users: UserDirectory,
-  categories: CategoryRepository,
+  categories: Pick<CategoryRepository, 'list'>,
   userIds: Iterable<string>,
 ): Promise<Names> {
   const ids = [...new Set(userIds)];

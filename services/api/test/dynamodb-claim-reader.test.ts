@@ -155,6 +155,104 @@ describe('A1: claim by ID', () => {
   });
 });
 
+describe('A1: claim by ID with persistence metadata', () => {
+  const getInput = {
+    TableName: 'ClaimFlow',
+    Key: { PK: 'CLAIM#claim-001', SK: 'CLAIM' },
+    ConsistentRead: true,
+  };
+
+  it('returns the claim and lastEventVersion from one strongly consistent read', async () => {
+    const { client, reader } = readerOver({
+      Item: encodeClaimItem(submitted(1), { lastEventVersion: 2 }),
+    });
+
+    expect(await reader.getStored('claim-001')).toEqual({
+      claim: submitted(1),
+      metadata: { lastEventVersion: 2 },
+    });
+
+    expect(client.commands).toHaveLength(1);
+    expect(client.commands[0]).toBeInstanceOf(GetCommand);
+    expect(client.commands[0]!.input).toEqual(getInput);
+  });
+
+  it('keeps a lastEventVersion of zero', async () => {
+    const { reader } = readerOver({
+      Item: encodeClaimItem(draft(1), { lastEventVersion: 0 }),
+    });
+    const stored = await reader.getStored('claim-001');
+    expect(stored?.metadata).toEqual({ lastEventVersion: 0 });
+    expect(stored?.metadata.lastEventVersion).toBe(0);
+  });
+
+  it('reports an absent lastEventVersion as absent, inferring nothing', async () => {
+    const { reader } = readerOver({ Item: encodeClaimItem(draft(1)) });
+    const stored = await reader.getStored('claim-001');
+    expect(stored?.claim).toEqual(draft(1));
+    expect(stored?.metadata).toEqual({});
+    expect(stored?.metadata).not.toHaveProperty('lastEventVersion');
+  });
+
+  it('returns undefined for a missing claim', async () => {
+    const { client, reader } = readerOver({});
+    expect(await reader.getStored('claim-404')).toBeUndefined();
+    expect(client.commands).toHaveLength(1);
+  });
+
+  it('is what get unwraps, with one request and no metadata on the claim', async () => {
+    const { client, reader } = readerOver({
+      Item: encodeClaimItem(draft(1), { lastEventVersion: 2 }),
+    });
+
+    const claim = await reader.get('claim-001');
+
+    expect(claim).toEqual(draft(1));
+    expect(claim).not.toHaveProperty('lastEventVersion');
+    expect(client.commands).toHaveLength(1);
+    expect(client.commands[0]!.input).toEqual(getInput);
+  });
+
+  it('rejects an item for a different claim with a fixed message', async () => {
+    const { reader } = readerOver({ Item: encodeClaimItem(draft(2)) });
+    const failure = await reader.getStored('claim-001').catch((error) => error);
+    expect(failure).toBeInstanceOf(ItemIntegrityError);
+    expect(String(failure)).not.toContain('claim-002');
+  });
+
+  it.each([
+    ['a malformed claim', { version: 'two' }],
+    ['a malformed lastEventVersion', { lastEventVersion: -1 }],
+    ['a fractional lastEventVersion', { lastEventVersion: 1.5 }],
+    ['a non-numeric lastEventVersion', { lastEventVersion: '2' }],
+    ['an unexpected attribute', { extra: true }],
+  ])('rejects %s with the codec error', async (_name, patch) => {
+    const { reader } = readerOver({
+      Item: { ...encodeClaimItem(draft(1)), ...patch },
+    });
+    await expect(reader.getStored('claim-001')).rejects.toBeInstanceOf(
+      ItemIntegrityError,
+    );
+  });
+
+  it('rejects invalid IDs before any request', async () => {
+    const { client, reader } = readerOver();
+    for (const id of ['', ' ', 'a b', '../x', 'x'.repeat(200), 7, undefined]) {
+      await expect(reader.getStored(id as unknown as string)).rejects.toThrow(
+        new TypeError('The claim ID is not valid.'),
+      );
+    }
+    expect(client.commands).toEqual([]);
+  });
+
+  it('propagates SDK errors unchanged', async () => {
+    const failure = new Error('ThrottlingException');
+    const { client, reader } = readerOver(failure);
+    await expect(reader.getStored('claim-001')).rejects.toBe(failure);
+    expect(client.commands).toHaveLength(1);
+  });
+});
+
 describe('A5: is a category used?', () => {
   it('reads the category strongly consistently and checks claimCount', async () => {
     const used = readerOver({
@@ -421,6 +519,7 @@ describe('errors and command types', () => {
     const page = { limit: 2 };
     const reads: ((r: DynamoDbClaimReader) => Promise<unknown>)[] = [
       (r) => r.get('claim-001'),
+      (r) => r.getStored('claim-001'),
       (r) => r.existsForCategory('travel'),
       (r) => r.listByEmployee('sub-aisha', page),
       (r) => r.listOpenForManager('sub-ben', page),
@@ -448,6 +547,7 @@ describe('errors and command types', () => {
   it('sends only GetItem and Query commands and has only read methods', async () => {
     const { client, reader } = readerOver();
     await reader.get('claim-001');
+    await reader.getStored('claim-001');
     await reader.existsForCategory('travel');
     await reader.listByEmployee('sub-aisha', { limit: 1 });
     await reader.listOpenForManager('sub-ben', { limit: 1 });
@@ -456,6 +556,7 @@ describe('errors and command types', () => {
     await reader.listHistory('claim-001', { limit: 1 });
 
     expect(client.commands.map((c) => c.constructor.name)).toEqual([
+      'GetCommand',
       'GetCommand',
       'GetCommand',
       'QueryCommand',
@@ -472,6 +573,7 @@ describe('errors and command types', () => {
         'constructor',
         'existsForCategory',
         'get',
+        'getStored',
         'listByEmployee',
         'listByStatus',
         'listHistory',

@@ -485,3 +485,51 @@ it('sends no DynamoDB command', () => {
   expect(send).not.toHaveBeenCalled();
   expect(Object.getPrototypeOf(composed)).toBe(Object.prototype);
 });
+
+describe('result references', () => {
+  const reference: CompletedRequest = {
+    ...completed,
+    response: { status: 201, resultRef: { receiptId: 'r-7731' } },
+  };
+
+  it('stores a result reference as the idempotency item, without a body', () => {
+    const composed = composeBusinessTransaction(
+      input({ events: [], completed: reference }),
+    );
+
+    expect(composed.TransactItems!.at(-1)).toEqual(idempotencyPut(reference));
+    expect(composed.TransactItems!.at(-1)!.Put!.Item!.response).toEqual({
+      status: 201,
+      resultRef: { receiptId: 'r-7731' },
+    });
+  });
+
+  it('has a deterministic token that differs from the snapshot form', () => {
+    const first = composeBusinessTransaction(input({ completed: reference }));
+    const second = composeBusinessTransaction(input({ completed: reference }));
+    const snapshot = composeBusinessTransaction(input());
+
+    expect(first.ClientRequestToken).toBe(second.ClientRequestToken);
+    expect(first.ClientRequestToken).not.toBe(snapshot.ClientRequestToken);
+  });
+
+  it('refuses a malformed reference before building anything', () => {
+    for (const response of [
+      { status: 201, resultRef: { receiptId: 'r-7731' }, body: {} },
+      { status: 201, resultRef: { receiptId: '' } },
+      { status: 201, resultRef: { receiptId: 'r-7731', extra: 1 } },
+      { status: 200, resultRef: { receiptId: 'r-7731' } },
+    ]) {
+      expect(() =>
+        composeBusinessTransaction(
+          input({
+            completed: {
+              ...completed,
+              response,
+            } as unknown as CompletedRequest,
+          }),
+        ),
+      ).toThrow(ItemEncodingError);
+    }
+  });
+});

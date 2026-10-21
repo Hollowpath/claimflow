@@ -8,7 +8,7 @@ import type { ClaimRepository } from './ports.js';
  * exactly like missing ones so their existence is not revealed.
  */
 export async function loadVisibleClaim(
-  claims: ClaimRepository,
+  claims: Pick<ClaimRepository, 'get'>,
   actor: Actor,
   claimId: string,
 ): Promise<Claim> {

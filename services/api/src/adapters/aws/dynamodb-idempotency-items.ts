@@ -2,7 +2,9 @@ import { idempotencyKeySchema, idSchema } from '@claimflow/contracts';
 
 import {
   expiresAfter,
+  isResultReference,
   type CompletedRequest,
+  type PersistedResult,
 } from '../../application/commit.js';
 import { idempotencyRetentionMs } from '../../application/idempotency.js';
 import type { StoredResponse } from '../../application/ports.js';
@@ -24,11 +26,17 @@ import {
 export const idempotencyEntityType = 'IdempotencyRecord';
 
 /**
- * A stored result: `COMPLETED` for a committed success (2xx), `REJECTED` for
- * a business rejection (4xx) stored so that retries get the same answer.
+ * A stored result: `COMPLETED` for a committed success (2xx), which may be a
+ * response snapshot or a result reference, `REJECTED` for a business
+ * rejection (4xx), which is always a response snapshot, stored so that
+ * retries get the same answer.
  */
-export type IdempotencyRecord = CompletedRequest &
-  ({ readonly outcome: 'COMPLETED' } | { readonly outcome: 'REJECTED' });
+export type IdempotencyRecord =
+  | (CompletedRequest & { readonly outcome: 'COMPLETED' })
+  | (Omit<CompletedRequest, 'response'> & {
+      readonly outcome: 'REJECTED';
+      readonly response: StoredResponse;
+    });
 
 export type IdempotencyOutcome = IdempotencyRecord['outcome'];
 
@@ -69,10 +77,7 @@ export function encodeIdempotencyItem(record: IdempotencyRecord): DynamoItem {
     entityType: idempotencyEntityType,
     fingerprint: record.fingerprint,
     outcome: record.outcome,
-    response:
-      response.body === undefined
-        ? { status: response.status }
-        : { status: response.status, body: response.body },
+    response: encodeResponse(response),
     createdAt: record.createdAt,
     expiresAt: record.expiresAt,
   };
@@ -107,7 +112,32 @@ function readRecord(item: DynamoItem, fail: Fail): IdempotencyRecord {
   }
 
   const response = readResponse(read.map('response'), outcome, fail);
-  return { actorId, key, fingerprint, outcome, response, createdAt, expiresAt };
+  const common = { actorId, key, fingerprint, createdAt, expiresAt };
+  if (outcome === 'COMPLETED') {
+    return { ...common, outcome, response };
+  }
+  if (isResultReference(response)) {
+    return fail('response.resultRef is only valid for a COMPLETED 201 result');
+  }
+  return { ...common, outcome, response };
+}
+
+/**
+ * The attribute map of a persisted result. A mixed shape (a body together with
+ * a reference) is kept as supplied so that the codec check below refuses it.
+ */
+function encodeResponse(response: PersistedResult): DynamoItem {
+  if (isResultReference(response)) {
+    const { body } = response as { body?: unknown };
+    return {
+      status: response.status,
+      resultRef: response.resultRef,
+      ...(body === undefined ? {} : { body }),
+    };
+  }
+  return response.body === undefined
+    ? { status: response.status }
+    : { status: response.status, body: response.body };
 }
 
 /** `IDEMPOTENCY#<actorId>#<key>`: neither part may contain `#`. */
@@ -129,15 +159,28 @@ function splitPartitionKey(pk: unknown, fail: Fail): [string, string] {
 
 /**
  * Completed results are 2xx and rejected results 4xx. A 204 response has no
- * body; every other response has a JSON-compatible body.
+ * body; every other response has a JSON-compatible body. A result reference
+ * is valid only for a completed 201 result, has no body, and holds exactly
+ * one receipt ID.
  */
 function readResponse(
   read: AttributeReader,
   outcome: IdempotencyOutcome,
   fail: Fail,
-): StoredResponse {
-  read.allowOnly(new Set(['status', 'body']));
+): PersistedResult {
+  read.allowOnly(new Set(['status', 'body', 'resultRef']));
   const status = read.positiveInteger('status');
+  if (read.has('resultRef')) {
+    if (outcome !== 'COMPLETED' || status !== 201) {
+      fail('response.resultRef is only valid for a COMPLETED 201 result');
+    }
+    if (read.has('body')) {
+      fail('response.body must be absent with response.resultRef');
+    }
+    const reference = read.map('resultRef');
+    reference.allowOnly(new Set(['receiptId']));
+    return { status: 201, resultRef: { receiptId: reference.id('receiptId') } };
+  }
   const [low, high] = outcome === 'COMPLETED' ? [200, 299] : [400, 499];
   if (status < low || status > high) {
     fail(`response.status is not valid for a ${outcome} result`);

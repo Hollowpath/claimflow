@@ -173,9 +173,9 @@ describe('idempotency items', () => {
       { response: { status: 200, body: { text: 'x'.repeat(310 * 1024) } } },
     ],
   ])('refuse to encode %s', (_name, changes) => {
-    expect(() => encodeIdempotencyItem({ ...completed, ...changes })).toThrow(
-      ItemEncodingError,
-    );
+    expect(() =>
+      encodeIdempotencyItem({ ...completed, ...changes } as IdempotencyRecord),
+    ).toThrow(ItemEncodingError);
   });
 
   it('expire exactly 24 hours after creation', () => {
@@ -230,7 +230,10 @@ describe('idempotency items', () => {
       expect(() =>
         decodeIdempotencyItem({
           ...encodeIdempotencyItem(completed),
-          response: { status: 200, body: record.response.body },
+          response: {
+            status: 200,
+            body: (record.response as { body?: unknown }).body,
+          },
         }),
       ).toThrow('response.body is too large');
     });
@@ -416,5 +419,227 @@ describe('idempotency items', () => {
     expect(String(badBody)).toContain(
       'IDEMPOTENCY#sub-aisha#5b0d6a8e-retry-key / IDEMPOTENCY',
     );
+  });
+});
+
+describe('result references', () => {
+  const reference: IdempotencyRecord = {
+    ...completed,
+    key: 'retry-key-upload',
+    response: { status: 201, resultRef: { receiptId: 'r-7731' } },
+  };
+  const referenceItem = () => encodeIdempotencyItem(reference);
+  const withResponse = (response: unknown): IdempotencyRecord =>
+    ({ ...reference, response }) as IdempotencyRecord;
+  const itemWithResponse = (response: unknown): DynamoItem => ({
+    ...referenceItem(),
+    response,
+  });
+
+  it('encodes exactly a status and a receipt reference, with no body', () => {
+    const item = referenceItem();
+
+    expect(item.response).toEqual({
+      status: 201,
+      resultRef: { receiptId: 'r-7731' },
+    });
+    expect(item.response).not.toHaveProperty('body');
+    expect(Object.keys(item).sort()).toEqual(
+      Object.keys(encodeIdempotencyItem(completed)).sort(),
+    );
+    expect(item).toMatchObject({
+      outcome: 'COMPLETED',
+      entityType: 'IdempotencyRecord',
+    });
+  });
+
+  it('round-trips without gaining or losing a field', () => {
+    const decoded = decodeIdempotencyItem(referenceItem());
+
+    expect(decoded).toEqual(reference);
+    expect(decoded.response).toEqual({
+      status: 201,
+      resultRef: { receiptId: 'r-7731' },
+    });
+    expect(decoded.response).not.toHaveProperty('body');
+    expect(Object.keys(decoded.response)).toEqual(['status', 'resultRef']);
+  });
+
+  it('stores a reference that holds no upload URL or form field', () => {
+    const serialized = JSON.stringify(referenceItem());
+    for (const word of ['url', 'fields', 'policy', 'signature', 'https']) {
+      expect(serialized.toLowerCase()).not.toContain(word);
+    }
+  });
+
+  it('leaves snapshots, 204 results, and rejected snapshots unchanged', () => {
+    for (const record of [completed, noContent, rejected]) {
+      const decoded = decodeIdempotencyItem(encodeIdempotencyItem(record));
+      expect(decoded).toEqual(record);
+      expect(decoded.response).not.toHaveProperty('resultRef');
+    }
+    expect(encodeIdempotencyItem(noContent).response).toEqual({ status: 204 });
+  });
+
+  it.each([
+    [
+      'a body together with a reference',
+      withResponse({
+        status: 201,
+        resultRef: { receiptId: 'r-7731' },
+        body: { a: 1 },
+      }),
+    ],
+    [
+      'an unknown reference field',
+      withResponse({
+        status: 201,
+        resultRef: { receiptId: 'r-7731', url: 'x' },
+      }),
+    ],
+    [
+      'a reference without a receipt ID',
+      withResponse({ status: 201, resultRef: {} }),
+    ],
+    [
+      'an empty receipt ID',
+      withResponse({ status: 201, resultRef: { receiptId: '' } }),
+    ],
+    [
+      'an unsafe receipt ID',
+      withResponse({ status: 201, resultRef: { receiptId: 'a b' } }),
+    ],
+    [
+      'a numeric receipt ID',
+      withResponse({ status: 201, resultRef: { receiptId: 7 } }),
+    ],
+    [
+      'an oversized receipt ID',
+      withResponse({ status: 201, resultRef: { receiptId: 'r'.repeat(200) } }),
+    ],
+    [
+      'a reference that is not a map',
+      withResponse({ status: 201, resultRef: 'r-7731' }),
+    ],
+    ['a list reference', withResponse({ status: 201, resultRef: ['r-7731'] })],
+    [
+      'a 200 status',
+      withResponse({ status: 200, resultRef: { receiptId: 'r-7731' } }),
+    ],
+    [
+      'a 202 status',
+      withResponse({ status: 202, resultRef: { receiptId: 'r-7731' } }),
+    ],
+    [
+      'a 204 status',
+      withResponse({ status: 204, resultRef: { receiptId: 'r-7731' } }),
+    ],
+    [
+      'a rejected record',
+      {
+        ...reference,
+        outcome: 'REJECTED',
+        response: { status: 201, resultRef: { receiptId: 'r-7731' } },
+      } as unknown as IdempotencyRecord,
+    ],
+    [
+      'a rejected 409 reference',
+      {
+        ...reference,
+        outcome: 'REJECTED',
+        response: { status: 409, resultRef: { receiptId: 'r-7731' } },
+      } as unknown as IdempotencyRecord,
+    ],
+  ])('refuses to encode %s', (_name, record) => {
+    expect(() => encodeIdempotencyItem(record)).toThrow(ItemEncodingError);
+  });
+
+  it.each([
+    [
+      'a body together with a reference',
+      { status: 201, resultRef: { receiptId: 'r-7731' }, body: { a: 1 } },
+      'response.body must be absent with response.resultRef',
+    ],
+    [
+      'an unknown reference field',
+      { status: 201, resultRef: { receiptId: 'r-7731', url: 'x' } },
+      'response.resultRef has an unexpected field',
+    ],
+    [
+      'a reference without a receipt ID',
+      { status: 201, resultRef: {} },
+      'response.resultRef.receiptId must be a string',
+    ],
+    [
+      'an invalid receipt ID',
+      { status: 201, resultRef: { receiptId: 'a b' } },
+      'response.resultRef.receiptId is not valid',
+    ],
+    [
+      'a reference that is not a map',
+      { status: 201, resultRef: 'r-7731' },
+      'response.resultRef must be a map',
+    ],
+    [
+      'a 200 status',
+      { status: 200, resultRef: { receiptId: 'r-7731' } },
+      'response.resultRef is only valid for a COMPLETED 201 result',
+    ],
+    [
+      'a 204 status',
+      { status: 204, resultRef: { receiptId: 'r-7731' } },
+      'response.resultRef is only valid for a COMPLETED 201 result',
+    ],
+  ])(
+    'refuses to decode %s with a fixed message',
+    (_name, response, message) => {
+      expect(() => decodeIdempotencyItem(itemWithResponse(response))).toThrow(
+        ItemIntegrityError,
+      );
+      expect(() => decodeIdempotencyItem(itemWithResponse(response))).toThrow(
+        message,
+      );
+    },
+  );
+
+  it('refuses to decode a rejected record that holds a reference', () => {
+    for (const status of [201, 409]) {
+      const item = {
+        ...encodeIdempotencyItem(rejected),
+        response: { status, resultRef: { receiptId: 'r-7731' } },
+      };
+      expect(() => decodeIdempotencyItem(item)).toThrow(ItemIntegrityError);
+      expect(() => decodeIdempotencyItem(item)).toThrow(
+        'response.resultRef is only valid for a COMPLETED 201 result',
+      );
+    }
+  });
+
+  it('names no stored or supplied value in a message', () => {
+    const secret = 'Secret Receipt';
+    const failures = [
+      errorOf(() =>
+        decodeIdempotencyItem(
+          itemWithResponse({ status: 201, resultRef: { receiptId: secret } }),
+        ),
+      ),
+      errorOf(() =>
+        decodeIdempotencyItem(
+          itemWithResponse({
+            status: 201,
+            resultRef: { receiptId: 'r-7731', [secret]: 1 },
+          }),
+        ),
+      ),
+      errorOf(() =>
+        encodeIdempotencyItem(
+          withResponse({ status: 201, resultRef: { receiptId: secret } }),
+        ),
+      ),
+    ];
+    for (const failure of failures) {
+      expect(failure).toBeInstanceOf(Error);
+      expect(String(failure)).not.toContain('Secret');
+    }
   });
 });

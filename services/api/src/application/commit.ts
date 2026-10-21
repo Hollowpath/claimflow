@@ -21,6 +21,35 @@ export function expiresAfter(now: Date, durationMs: number): EpochSeconds {
   return toEpochSeconds(new Date(now.getTime() + durationMs));
 }
 
+/**
+ * A reference to a result that is rebuilt on replay instead of stored
+ * (docs/aws-architecture.md, section 10, "Reconstructed results"). Only a
+ * receipt upload uses one: the presigned form is never persisted.
+ */
+export interface ResultReference {
+  readonly receiptId: string;
+}
+
+/** A persisted result that is a reference, with no response body. */
+export interface StoredResultReference {
+  readonly status: 201;
+  readonly resultRef: ResultReference;
+}
+
+/**
+ * What an idempotency record persists: either a response snapshot or, for a
+ * committed receipt upload, a result reference. The two shapes are mutually
+ * exclusive. The local `StoredResponse` contract is unchanged.
+ */
+export type PersistedResult = StoredResponse | StoredResultReference;
+
+/** Whether a persisted result is a reference rather than a snapshot. */
+export function isResultReference(
+  result: PersistedResult,
+): result is StoredResultReference {
+  return 'resultRef' in result;
+}
+
 /** The application result stored under an idempotency key with the change. */
 export interface CompletedRequest {
   readonly actorId: string;
@@ -28,8 +57,8 @@ export interface CompletedRequest {
   readonly key: string;
   /** SHA-256 of the method, path, and body that the key was first used for. */
   readonly fingerprint: string;
-  /** The status and body replayed to retries. */
-  readonly response: StoredResponse;
+  /** The status and body replayed to retries, or a result reference. */
+  readonly response: PersistedResult;
   /** ISO 8601 creation time. */
   readonly createdAt: string;
   /** TTL: exactly `idempotencyRetentionMs` (24 hours) after `createdAt`. */

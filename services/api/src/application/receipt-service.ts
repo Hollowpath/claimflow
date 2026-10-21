@@ -217,7 +217,7 @@ export class ReceiptService {
   }
 }
 
-function unavailable(): ValidationError {
+export function unavailable(): ValidationError {
   return new ValidationError('The receipt cannot be attached.', [
     {
       field: 'receiptId',

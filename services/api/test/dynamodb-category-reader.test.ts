@@ -161,6 +161,125 @@ describe('get', () => {
   });
 });
 
+describe('getStored', () => {
+  const getInput = {
+    TableName: 'ClaimFlow',
+    Key: { PK: 'CATEGORIES', SK: 'CATEGORY#travel' },
+    ConsistentRead: true,
+  };
+
+  it('returns the category with its claimCount and lastEventVersion from one strongly consistent read', async () => {
+    const client = new ScriptedClient([
+      {
+        Item: encodeCategoryItem(category('travel'), {
+          claimCount: 4,
+          lastEventVersion: 1,
+        }),
+      },
+    ]);
+
+    expect(await readerOver(client).getStored('travel')).toEqual({
+      category: category('travel'),
+      metadata: { claimCount: 4, lastEventVersion: 1 },
+    });
+
+    expect(client.commands).toHaveLength(1);
+    const command = client.commands[0] as GetCommand;
+    expect(command).toBeInstanceOf(GetCommand);
+    expect(command.input).toEqual(getInput);
+  });
+
+  it('keeps a lastEventVersion of zero distinct from an absent one', async () => {
+    const zero = new ScriptedClient([
+      {
+        Item: encodeCategoryItem(category('travel'), {
+          claimCount: 0,
+          lastEventVersion: 0,
+        }),
+      },
+    ]);
+    const absent = new ScriptedClient([{ Item: stored('travel') }]);
+
+    const withZero = await readerOver(zero).getStored('travel');
+    const without = await readerOver(absent).getStored('travel');
+
+    expect(withZero?.metadata).toEqual({ claimCount: 0, lastEventVersion: 0 });
+    expect(without?.metadata).toEqual({ claimCount: 0 });
+    expect(without?.metadata).not.toHaveProperty('lastEventVersion');
+  });
+
+  it('returns undefined for a missing category after one request', async () => {
+    const client = new ScriptedClient([{}]);
+    expect(await readerOver(client).getStored('missing')).toBeUndefined();
+    expect(client.commands).toHaveLength(1);
+  });
+
+  it('is what get unwraps, with the same single request', async () => {
+    const client = new ScriptedClient([
+      {
+        Item: encodeCategoryItem(category('travel'), {
+          claimCount: 4,
+          lastEventVersion: 1,
+        }),
+      },
+    ]);
+
+    const result = await readerOver(client).get('travel');
+
+    expect(result).toEqual(category('travel'));
+    expect(client.commands).toHaveLength(1);
+    expect((client.commands[0] as GetCommand).input).toEqual(getInput);
+  });
+
+  it.each([
+    ['a negative claimCount', { claimCount: -1 }],
+    ['a fractional claimCount', { claimCount: 1.5 }],
+    ['a negative lastEventVersion', { lastEventVersion: -1 }],
+    ['a non-numeric lastEventVersion', { lastEventVersion: '1' }],
+    ['an unexpected attribute', { extra: true }],
+  ])('rejects %s with the codec error', async (_name, patch) => {
+    const client = new ScriptedClient([
+      { Item: { ...stored('travel'), ...patch } },
+    ]);
+    await expect(readerOver(client).getStored('travel')).rejects.toBeInstanceOf(
+      ItemIntegrityError,
+    );
+  });
+
+  it('rejects an item stored under another key, naming no other value', async () => {
+    const client = new ScriptedClient([{ Item: stored('meals') }]);
+    const failure = await readerOver(client)
+      .getStored('travel')
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ItemIntegrityError);
+    expect(String(failure)).not.toContain('meals');
+  });
+
+  it.each([
+    '',
+    ' ',
+    'a b',
+    '../x',
+    'CATEGORY#x',
+    'x'.repeat(200),
+    7,
+    undefined,
+  ])('rejects the category ID %j before any command', async (id) => {
+    const client = new ScriptedClient();
+    await expect(
+      readerOver(client).getStored(id as unknown as string),
+    ).rejects.toThrow(new TypeError('The category ID is not valid.'));
+    expect(client.commands).toEqual([]);
+  });
+
+  it('propagates SDK errors unchanged', async () => {
+    const failure = new Error('ThrottlingException');
+    const client = new ScriptedClient([failure]);
+    await expect(readerOver(client).getStored('travel')).rejects.toBe(failure);
+    expect(client.commands).toHaveLength(1);
+  });
+});
+
 describe('list', () => {
   const baseQuery = {
     TableName: 'ClaimFlow',
@@ -290,6 +409,7 @@ describe('list', () => {
 it('sends only GetItem and Query commands', async () => {
   const client = new ScriptedClient([
     { Item: stored('travel') },
+    { Item: stored('travel') },
     {
       Items: [stored('a')],
       LastEvaluatedKey: { PK: 'CATEGORIES', SK: 'CATEGORY#a' },
@@ -299,9 +419,11 @@ it('sends only GetItem and Query commands', async () => {
   const reader = readerOver(client);
 
   await reader.get('travel');
+  await reader.getStored('travel');
   await reader.list();
 
   expect(client.commands.map((c) => (c as object).constructor.name)).toEqual([
+    'GetCommand',
     'GetCommand',
     'QueryCommand',
     'QueryCommand',
@@ -312,5 +434,5 @@ it('exposes no write methods', () => {
   const reader = readerOver(new ScriptedClient());
   expect(
     Object.getOwnPropertyNames(Object.getPrototypeOf(reader)).sort(),
-  ).toEqual(['constructor', 'get', 'list']);
+  ).toEqual(['constructor', 'get', 'getStored', 'list']);
 });

@@ -12,7 +12,6 @@ import {
   approveClaim,
   assertMayDeleteClaim,
   createDraftClaim,
-  hasRole,
   markClaimPaid,
   rejectClaim,
   reopenClaim,
@@ -27,7 +26,7 @@ import {
 } from '@claimflow/domain';
 
 import { assertVersion, loadVisibleClaim } from './claim-access.js';
-import { ForbiddenError } from './errors.js';
+import { ClaimQueryService } from './claim-query-service.js';
 import type {
   CategoryRepository,
   ClaimRepository,
@@ -37,12 +36,7 @@ import type {
   ReceiptStorage,
   UserDirectory,
 } from './ports.js';
-import {
-  claimUserIds,
-  loadNames,
-  toClaimDto,
-  toHistoryDto,
-} from './presenters.js';
+import { claimUserIds, loadNames, toClaimDto } from './presenters.js';
 
 export interface ClaimServiceDependencies {
   readonly claims: ClaimRepository;
@@ -61,7 +55,42 @@ export interface ActionInput {
 }
 
 export class ClaimService {
-  public constructor(private readonly deps: ClaimServiceDependencies) {}
+  private readonly queries: ClaimQueryService;
+
+  public constructor(private readonly deps: ClaimServiceDependencies) {
+    this.queries = new ClaimQueryService(deps);
+  }
+
+  public get(actor: Actor, claimId: string): Promise<ClaimDto> {
+    return this.queries.get(actor, claimId);
+  }
+
+  public listMine(actor: Actor, page: PageQuery): Promise<Page<ClaimDto>> {
+    return this.queries.listMine(actor, page);
+  }
+
+  public listReviewQueue(
+    actor: Actor,
+    page: PageQuery,
+  ): Promise<Page<ClaimDto>> {
+    return this.queries.listReviewQueue(actor, page);
+  }
+
+  public listAll(
+    actor: Actor,
+    status: ClaimStatus | undefined,
+    page: PageQuery,
+  ): Promise<Page<ClaimDto>> {
+    return this.queries.listAll(actor, status, page);
+  }
+
+  public history(
+    actor: Actor,
+    claimId: string,
+    page: PageQuery,
+  ): Promise<Page<ClaimHistoryEntryDto>> {
+    return this.queries.history(actor, claimId, page);
+  }
 
   public async create(
     actor: Actor,
@@ -101,11 +130,6 @@ export class ClaimService {
         });
       }
     }
-  }
-
-  public async get(actor: Actor, claimId: string): Promise<ClaimDto> {
-    const claim = await loadVisibleClaim(this.deps.claims, actor, claimId);
-    return this.present(claim, actor);
   }
 
   public async update(
@@ -166,62 +190,6 @@ export class ClaimService {
     return this.save(change, claim, actor);
   }
 
-  public async listMine(
-    actor: Actor,
-    page: PageQuery,
-  ): Promise<Page<ClaimDto>> {
-    if (!hasRole(actor, 'EMPLOYEE')) {
-      throw new ForbiddenError('Only employees have their own claims.');
-    }
-    return this.presentPage(
-      await this.deps.claims.listByEmployee(actor.userId, page),
-      actor,
-    );
-  }
-
-  public async listReviewQueue(
-    actor: Actor,
-    page: PageQuery,
-  ): Promise<Page<ClaimDto>> {
-    if (!hasRole(actor, 'MANAGER')) {
-      throw new ForbiddenError('Only managers have a review queue.');
-    }
-    return this.presentPage(
-      await this.deps.claims.listOpenForManager(actor.userId, page),
-      actor,
-    );
-  }
-
-  public async listAll(
-    actor: Actor,
-    status: ClaimStatus | undefined,
-    page: PageQuery,
-  ): Promise<Page<ClaimDto>> {
-    if (!hasRole(actor, 'ADMIN')) {
-      throw new ForbiddenError('Only administrators can list all claims.');
-    }
-    return this.presentPage(
-      await this.deps.claims.listByStatus(status, page),
-      actor,
-    );
-  }
-
-  public async history(
-    actor: Actor,
-    claimId: string,
-    page: PageQuery,
-  ): Promise<Page<ClaimHistoryEntryDto>> {
-    await loadVisibleClaim(this.deps.claims, actor, claimId);
-    const entries = await this.deps.claims.listHistory(claimId, page);
-    const names = await this.names(entries.items.map((entry) => entry.actorId));
-    return {
-      items: entries.items.map((entry) => toHistoryDto(entry, names)),
-      ...(entries.nextCursor === undefined
-        ? {}
-        : { nextCursor: entries.nextCursor }),
-    };
-  }
-
   private async save(
     change: ClaimChange,
     previous: Claim,
@@ -249,16 +217,5 @@ export class ClaimService {
 
   private async present(claim: Claim, actor: Actor): Promise<ClaimDto> {
     return toClaimDto(claim, actor, await this.names(claimUserIds(claim)));
-  }
-
-  private async presentPage(
-    page: { items: readonly Claim[]; nextCursor?: string },
-    actor: Actor,
-  ): Promise<Page<ClaimDto>> {
-    const names = await this.names(page.items.flatMap(claimUserIds));
-    return {
-      items: page.items.map((claim) => toClaimDto(claim, actor, names)),
-      ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
-    };
   }
 }

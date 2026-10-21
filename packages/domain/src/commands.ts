@@ -404,7 +404,7 @@ function editDraft(
   };
 }
 
-function assertEditable(claim: Claim, actor: Actor): void {
+export function assertEditable(claim: Claim, actor: Actor): void {
   if (!isClaimOwner(claim, actor)) {
     throw new DomainError(
       'FORBIDDEN',
