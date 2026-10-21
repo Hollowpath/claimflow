@@ -3,6 +3,7 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "customConditions": ["source"],
     "lib": ["es2022"],
     "declaration": true,
     "strict": true,
