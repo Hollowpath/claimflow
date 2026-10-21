@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { defaultClientConditions } from 'vite';
 import { defineConfig } from 'vitest/config';
 
-import { thirdPartyNotices } from './scripts/notices';
+import { thirdPartyNotices } from './scripts/notices.ts';
 
 /** The repository's notices; every real build checks them and ships a copy. */
 const noticesPath = fileURLToPath(
