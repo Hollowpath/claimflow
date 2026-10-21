@@ -1,3 +1,4 @@
+import type { TransactWriteCommandInput } from '@aws-sdk/lib-dynamodb';
 import type { Category } from '@claimflow/domain';
 
 import type {
@@ -58,8 +59,16 @@ export class DynamoDbCategoryWriter {
     category: Category,
     options: CommitOptions,
   ): Promise<void> {
+    await this.executor.execute(this.prepareCreate(category, options));
+  }
+
+  /** The composed transaction of `create`, without sending it. */
+  public prepareCreate(
+    category: Category,
+    options: CommitOptions,
+  ): TransactWriteCommandInput {
     const completed = checkOptions(options);
-    await this.commit(
+    return this.compose(
       [createCategoryOperation(this.tableName, category)],
       options,
       completed,
@@ -76,8 +85,19 @@ export class DynamoDbCategoryWriter {
     expectedVersion: number,
     options: CommitOptions,
   ): Promise<void> {
+    await this.executor.execute(
+      this.prepareUpdate(category, expectedVersion, options),
+    );
+  }
+
+  /** The composed transaction of `update`, without sending it. */
+  public prepareUpdate(
+    category: Category,
+    expectedVersion: number,
+    options: CommitOptions,
+  ): TransactWriteCommandInput {
     const completed = checkOptions(options);
-    await this.commit(
+    return this.compose(
       [
         updateCategoryOperation(
           this.tableName,
@@ -97,26 +117,36 @@ export class DynamoDbCategoryWriter {
     expectedVersion: number,
     options: CommitOptions,
   ): Promise<void> {
+    await this.executor.execute(
+      this.prepareDelete(categoryId, expectedVersion, options),
+    );
+  }
+
+  /** The composed transaction of `delete`, without sending it. */
+  public prepareDelete(
+    categoryId: string,
+    expectedVersion: number,
+    options: CommitOptions,
+  ): TransactWriteCommandInput {
     const completed = checkOptions(options);
-    await this.commit(
+    return this.compose(
       [deleteCategoryOperation(this.tableName, categoryId, expectedVersion)],
       options,
       completed,
     );
   }
 
-  private async commit(
+  private compose(
     businessItems: readonly TransactionItem[],
     options: CommitOptions,
     completed: CompletedRequest,
-  ): Promise<void> {
-    const input = composeBusinessTransaction({
+  ): TransactWriteCommandInput {
+    return composeBusinessTransaction({
       tableName: this.tableName,
       businessItems,
       events: options.events,
       completed,
     });
-    await this.executor.execute(input);
   }
 }
 

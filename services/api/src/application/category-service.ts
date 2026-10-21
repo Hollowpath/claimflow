@@ -28,15 +28,21 @@ export interface CategoryServiceDependencies {
   readonly ids: IdGenerator;
 }
 
+/** Every category by name, as the category list presents it. */
+export async function listCategories(
+  categories: Pick<CategoryRepository, 'list'>,
+): Promise<CategoryDto[]> {
+  return [...(await categories.list())]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(toCategoryDto);
+}
+
 export class CategoryService {
   public constructor(private readonly deps: CategoryServiceDependencies) {}
 
   /** Every signed-in user may read categories to fill in and review claims. */
   public async list(): Promise<CategoryDto[]> {
-    const categories = await this.deps.categories.list();
-    return [...categories]
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map(toCategoryDto);
+    return listCategories(this.deps.categories);
   }
 
   public async create(
@@ -100,7 +106,7 @@ export class CategoryService {
   }
 }
 
-function definedOnly(
+export function definedOnly(
   changes: Omit<UpdateCategoryRequest, 'expectedVersion'>,
 ): Partial<CategorySettings> {
   return Object.fromEntries(

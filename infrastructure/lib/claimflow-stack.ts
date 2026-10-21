@@ -1,5 +1,9 @@
 import * as cdk from 'aws-cdk-lib/core';
+import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
+import * as apigwv2Authorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
+import * as apigwv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
@@ -11,6 +15,8 @@ import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as nodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { resolve } from 'node:path';
 import type { Construct } from 'constructs';
@@ -68,6 +74,118 @@ export const CLAIMFLOW_RECEIPT_JANITOR_NAME = 'claimflow-receipt-janitor';
 export const CLAIMFLOW_JANITOR_FAILURE_QUEUE_NAME =
   'claimflow-receipt-janitor-failures';
 export const CLAIMFLOW_OUTBOX_SWEEPER_NAME = 'claimflow-outbox-sweeper';
+/**
+ * CloudWatch alarms (docs/aws-architecture.md, section 4). Native metrics
+ * only, standard resolution, no actions: they change state and nothing else.
+ */
+export const CLAIMFLOW_ALARM_PREFIX = 'claimflow';
+/** Lambda errors and throttles, and queue depth: any occurrence is a fault. */
+export const CLAIMFLOW_ALARM_FAULT_THRESHOLD = 1;
+/** Lambda alarms look at 15 minutes, the sweeper's schedule interval. */
+export const CLAIMFLOW_ALARM_LAMBDA_PERIOD_MINUTES = 15;
+export const CLAIMFLOW_ALARM_QUEUE_PERIOD_MINUTES = 5;
+/** The API's 5xx percentage; a period without requests has no value. */
+export const CLAIMFLOW_ALARM_API_PERIOD_MINUTES = 5;
+export const CLAIMFLOW_ALARM_API_5XX_PERCENT = 5;
+export const CLAIMFLOW_ALARM_API_EVALUATION_PERIODS = 3;
+export const CLAIMFLOW_ALARM_API_DATAPOINTS_TO_ALARM = 2;
+/**
+ * The sweeper's oldest-pending-outbox-age metric (an Embedded Metric Format
+ * line in its log, not PutMetricData). It runs every 15 minutes, so each
+ * period holds one datapoint.
+ */
+export const CLAIMFLOW_ALARM_OUTBOX_AGE_NAMESPACE = 'ClaimFlow';
+export const CLAIMFLOW_ALARM_OUTBOX_AGE_METRIC = 'OldestPendingOutboxAge';
+export const CLAIMFLOW_ALARM_OUTBOX_AGE_SECONDS = 30 * 60;
+export const CLAIMFLOW_ALARM_OUTBOX_AGE_PERIOD_MINUTES = 15;
+export const CLAIMFLOW_ALARM_OUTBOX_AGE_EVALUATION_PERIODS = 2;
+/** The one SNS topic every alarm publishes to when it enters ALARM. */
+export const CLAIMFLOW_ALARM_TOPIC_NAME = 'claimflow-alarms';
+/** The required, NoEcho stack parameter that holds the subscriber's address. */
+export const CLAIMFLOW_ALARM_EMAIL_PARAMETER = 'AlarmNotificationEmail';
+/** A stream consumer this far behind has stopped keeping up. */
+export const CLAIMFLOW_ALARM_ITERATOR_AGE_MINUTES = 15;
+export const CLAIMFLOW_ALARM_ITERATOR_PERIOD_MINUTES = 5;
+export const CLAIMFLOW_ALARM_ITERATOR_EVALUATION_PERIODS = 3;
+export const CLAIMFLOW_API_FUNCTION_NAME = 'claimflow-api';
+/**
+ * The third-party notices that accompany every bundled Lambda asset
+ * (THIRD_PARTY_NOTICES.txt at the repository root). The hook only copies a
+ * file at build time: no resource, permission, or runtime behavior changes.
+ */
+export const CLAIMFLOW_THIRD_PARTY_NOTICES_FILE = 'THIRD_PARTY_NOTICES.txt';
+const slashes = (path: string) => path.split('\\').join('/');
+const thirdPartyNoticeHooks: nodejs.ICommandHooks = {
+  beforeBundling: () => [],
+  beforeInstall: () => [],
+  afterBundling: (inputDir, outputDir) => [
+    `node -e "require('fs').copyFileSync('${slashes(inputDir)}/${CLAIMFLOW_THIRD_PARTY_NOTICES_FILE}','${slashes(outputDir)}/${CLAIMFLOW_THIRD_PARTY_NOTICES_FILE}')"`,
+  ],
+};
+/** The API function's settings (docs/aws-architecture.md, section 4). */
+export const CLAIMFLOW_API_MEMORY_MB = 512;
+/** Under the 30-second integration limit of an API Gateway HTTP API. */
+export const CLAIMFLOW_API_TIMEOUT_SECONDS = 29;
+export const CLAIMFLOW_API_NAME = 'claimflow-api';
+/** The path prefix of every API route (`apiBasePath` in the contracts). */
+export const CLAIMFLOW_API_BASE_PATH = '/api/v1';
+/**
+ * The scope a request's access token must carry. Cognito access tokens list
+ * the scopes the app client was granted in their `scope` claim, and ID tokens
+ * have none, so an ID token cannot satisfy it.
+ */
+export const CLAIMFLOW_API_REQUIRED_SCOPE = 'openid';
+/** Steady-state and burst request limits of the API's default stage. */
+export const CLAIMFLOW_API_RATE_LIMIT = 20;
+export const CLAIMFLOW_API_BURST_LIMIT = 40;
+/** The only request headers a browser may send, and the response headers it may read. */
+export const CLAIMFLOW_API_CORS_ALLOWED_HEADERS = [
+  'Authorization',
+  'Content-Type',
+  'Idempotency-Key',
+] as const;
+export const CLAIMFLOW_API_CORS_EXPOSED_HEADERS = [
+  'X-Request-Id',
+  'X-Correlation-Id',
+] as const;
+export const CLAIMFLOW_API_CORS_MAX_AGE_MINUTES = 10;
+
+type ApiMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+/** The one route that needs no token (section 4). */
+export const CLAIMFLOW_API_PUBLIC_ROUTES: readonly [ApiMethod, string][] = [
+  ['GET', '/health'],
+];
+
+/**
+ * Every protected route, listed one by one: there is no catch-all, so any
+ * other path or method is answered by API Gateway itself.
+ */
+export const CLAIMFLOW_API_PROTECTED_ROUTES: readonly [ApiMethod, string][] = [
+  ['GET', '/session'],
+  ['GET', '/categories'],
+  ['POST', '/categories'],
+  ['PATCH', '/categories/{categoryId}'],
+  ['DELETE', '/categories/{categoryId}'],
+  ['GET', '/me/claims'],
+  ['GET', '/review-queue'],
+  ['GET', '/claims'],
+  ['POST', '/claims'],
+  ['GET', '/claims/{claimId}'],
+  ['PATCH', '/claims/{claimId}'],
+  ['DELETE', '/claims/{claimId}'],
+  ['GET', '/claims/{claimId}/history'],
+  ['POST', '/claims/{claimId}/submit'],
+  ['POST', '/claims/{claimId}/start-review'],
+  ['POST', '/claims/{claimId}/approve'],
+  ['POST', '/claims/{claimId}/reject'],
+  ['POST', '/claims/{claimId}/reopen'],
+  ['POST', '/claims/{claimId}/mark-paid'],
+  ['POST', '/receipts'],
+  ['PUT', '/claims/{claimId}/receipt'],
+  ['DELETE', '/claims/{claimId}/receipt'],
+  ['GET', '/claims/{claimId}/receipt'],
+];
 export const CLAIMFLOW_PUBLISHER_EVENT_BUS_ENV = 'CLAIMFLOW_EVENT_BUS_NAME';
 
 const repositoryRoot = resolve(__dirname, '../..');
@@ -144,6 +262,24 @@ export class ClaimFlowStack extends cdk.Stack {
 
   /** Invokes the outbox sweeper every 15 minutes. */
   public readonly outboxSweeperSchedule: events.Rule;
+
+  /** Serves the HTTP API's requests. */
+  public readonly apiFunction: nodejs.NodejsFunction;
+
+  /** The API function's own log group. */
+  public readonly apiFunctionLogGroup: logs.LogGroup;
+
+  /** The HTTP API in front of the API function. */
+  public readonly httpApi: apigwv2.HttpApi;
+
+  /** Receives every alarm's ALARM notification and emails the subscriber. */
+  public readonly alarmTopic: sns.Topic;
+
+  /** Every CloudWatch alarm, by the name it has in CloudWatch. */
+  public readonly alarms: Readonly<Record<string, cloudwatch.Alarm>>;
+
+  /** Validates Cognito access tokens before any route reaches the function. */
+  public readonly apiAuthorizer: apigwv2Authorizers.HttpJwtAuthorizer;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, { description: CLAIMFLOW_STACK_DESCRIPTION, ...props });
@@ -430,6 +566,7 @@ export class ClaimFlowStack extends cdk.Stack {
         externalModules: [],
         esbuildArgs: { '--conditions': 'source' },
         forceDockerBundling: false,
+        commandHooks: thirdPartyNoticeHooks,
       },
     });
     this.cleanupWorker.addEventSource(
@@ -495,6 +632,7 @@ export class ClaimFlowStack extends cdk.Stack {
         externalModules: [],
         esbuildArgs: { '--conditions': 'source' },
         forceDockerBundling: false,
+        commandHooks: thirdPartyNoticeHooks,
       },
     });
     this.outboxPublisher.addEventSource(
@@ -575,6 +713,7 @@ export class ClaimFlowStack extends cdk.Stack {
         externalModules: [],
         esbuildArgs: { '--conditions': 'source' },
         forceDockerBundling: false,
+        commandHooks: thirdPartyNoticeHooks,
       },
     });
     this.receiptJanitor.addEventSource(
@@ -665,6 +804,7 @@ export class ClaimFlowStack extends cdk.Stack {
         externalModules: [],
         esbuildArgs: { '--conditions': 'source' },
         forceDockerBundling: false,
+        commandHooks: thirdPartyNoticeHooks,
       },
     });
     this.outboxSweeperSchedule = new events.Rule(
@@ -682,5 +822,400 @@ export class ClaimFlowStack extends cdk.Stack {
         ],
       },
     );
+
+    // The API function. The HTTP API below is its only invoker. Its role is derived from the calls the AWS adapters make:
+    // a transaction is authorized by the permissions of its operations (there
+    // is no separate TransactWriteItems action), so Put, Update, Delete, and
+    // ConditionCheck are granted on the table. It has no stream, EventBridge,
+    // SQS, or Cognito access, and cannot delete final receipt objects.
+    this.apiFunctionLogGroup = new logs.LogGroup(this, 'ApiFunctionLogGroup', {
+      logGroupName: `/aws/lambda/${CLAIMFLOW_API_FUNCTION_NAME}`,
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const apiRole = new iam.Role(this, 'ApiFunctionRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+    });
+    this.apiFunctionLogGroup.grantWrite(apiRole);
+    apiRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          'dynamodb:GetItem',
+          'dynamodb:BatchGetItem',
+          'dynamodb:Query',
+          'dynamodb:PutItem',
+          'dynamodb:UpdateItem',
+          'dynamodb:DeleteItem',
+          'dynamodb:ConditionCheckItem',
+        ],
+        resources: [this.table.tableArn],
+      }),
+    );
+    // Claim lists read GSI1 to GSI4 (GSI4 shares its key space with outbox
+    // items, which IAM cannot separate here).
+    apiRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:Query'],
+        resources: CLAIMFLOW_INDEX_NAMES.map(
+          (indexName) => `${this.table.tableArn}/index/${indexName}`,
+        ),
+      }),
+    );
+    // Reads for inspection, the copy source, and download URLs; writes for the
+    // copy destination and the presigned upload form (signed with this role);
+    // deletion only of the pending upload.
+    apiRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:GetObject', 's3:PutObject'],
+        resources: [
+          this.receiptBucket.arnForObjects('receipts/*'),
+          this.receiptBucket.arnForObjects(
+            `${CLAIMFLOW_PENDING_UPLOAD_PREFIX}*`,
+          ),
+        ],
+      }),
+    );
+    apiRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:DeleteObject'],
+        resources: [
+          this.receiptBucket.arnForObjects(
+            `${CLAIMFLOW_PENDING_UPLOAD_PREFIX}*`,
+          ),
+        ],
+      }),
+    );
+    // Without s3:ListBucket, S3 answers a HEAD or GET of a missing key with
+    // 403 instead of 404, and the inspector could not tell a missing upload.
+    apiRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:ListBucket'],
+        resources: [this.receiptBucket.bucketArn],
+      }),
+    );
+    this.apiFunction = new nodejs.NodejsFunction(this, 'ApiFunction', {
+      functionName: CLAIMFLOW_API_FUNCTION_NAME,
+      entry: resolve(
+        repositoryRoot,
+        'services/api/src/adapters/aws/api-lambda.ts',
+      ),
+      projectRoot: repositoryRoot,
+      depsLockFilePath: resolve(repositoryRoot, 'package-lock.json'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_24_X,
+      architecture: lambda.Architecture.ARM_64,
+      memorySize: CLAIMFLOW_API_MEMORY_MB,
+      timeout: cdk.Duration.seconds(CLAIMFLOW_API_TIMEOUT_SECONDS),
+      role: apiRole,
+      logGroup: this.apiFunctionLogGroup,
+      environment: {
+        [CLAIMFLOW_CLEANUP_WORKER_TABLE_ENV]: this.table.tableName,
+        [CLAIMFLOW_CLEANUP_WORKER_BUCKET_ENV]: this.receiptBucket.bucketName,
+      },
+      bundling: {
+        externalModules: [],
+        esbuildArgs: { '--conditions': 'source' },
+        forceDockerBundling: false,
+        commandHooks: thirdPartyNoticeHooks,
+      },
+    });
+
+    // The HTTP API. Every route is listed explicitly and goes to the API
+    // function through one payload format 2.0 integration. Only the health
+    // check is public; every other route needs a Cognito access token from
+    // the web app client that carries the required scope. An ID token has
+    // the right audience but no `scope` claim, so it is refused.
+    this.httpApi = new apigwv2.HttpApi(this, 'HttpApi', {
+      apiName: CLAIMFLOW_API_NAME,
+      description: 'ClaimFlow HTTP API',
+      createDefaultStage: false,
+      corsPreflight: {
+        allowOrigins: [webOrigin],
+        allowMethods: [
+          apigwv2.CorsHttpMethod.GET,
+          apigwv2.CorsHttpMethod.POST,
+          apigwv2.CorsHttpMethod.PUT,
+          apigwv2.CorsHttpMethod.PATCH,
+          apigwv2.CorsHttpMethod.DELETE,
+        ],
+        allowHeaders: [...CLAIMFLOW_API_CORS_ALLOWED_HEADERS],
+        exposeHeaders: [...CLAIMFLOW_API_CORS_EXPOSED_HEADERS],
+        allowCredentials: false,
+        maxAge: cdk.Duration.minutes(CLAIMFLOW_API_CORS_MAX_AGE_MINUTES),
+      },
+    });
+    new apigwv2.HttpStage(this, 'HttpApiDefaultStage', {
+      httpApi: this.httpApi,
+      stageName: '$default',
+      autoDeploy: true,
+      throttle: {
+        rateLimit: CLAIMFLOW_API_RATE_LIMIT,
+        burstLimit: CLAIMFLOW_API_BURST_LIMIT,
+      },
+    });
+    this.apiAuthorizer = new apigwv2Authorizers.HttpJwtAuthorizer(
+      'ApiAuthorizer',
+      this.userPool.userPoolProviderUrl,
+      {
+        authorizerName: 'claimflow-cognito',
+        jwtAudience: [this.webClient.userPoolClientId],
+        identitySource: ['$request.header.Authorization'],
+      },
+    );
+    const apiIntegration = new apigwv2Integrations.HttpLambdaIntegration(
+      'ApiIntegration',
+      this.apiFunction,
+      { payloadFormatVersion: apigwv2.PayloadFormatVersion.VERSION_2_0 },
+    );
+    for (const [method, path] of CLAIMFLOW_API_PUBLIC_ROUTES) {
+      this.httpApi.addRoutes({
+        path: `${CLAIMFLOW_API_BASE_PATH}${path}`,
+        methods: [apigwv2.HttpMethod[method]],
+        integration: apiIntegration,
+        authorizer: new apigwv2.HttpNoneAuthorizer(),
+      });
+    }
+    for (const [method, path] of CLAIMFLOW_API_PROTECTED_ROUTES) {
+      this.httpApi.addRoutes({
+        path: `${CLAIMFLOW_API_BASE_PATH}${path}`,
+        methods: [apigwv2.HttpMethod[method]],
+        integration: apiIntegration,
+        authorizer: this.apiAuthorizer,
+        authorizationScopes: [CLAIMFLOW_API_REQUIRED_SCOPE],
+      });
+    }
+
+    new cdk.CfnOutput(this, 'ApiEndpoint', {
+      description: 'Invoke URL of the HTTP API, without the API base path',
+      value: this.httpApi.apiEndpoint,
+    });
+    new cdk.CfnOutput(this, 'ApiBaseUrl', {
+      description: 'Base URL of every ClaimFlow API route',
+      value: `${this.httpApi.apiEndpoint}${CLAIMFLOW_API_BASE_PATH}`,
+    });
+    new cdk.CfnOutput(this, 'ApiId', {
+      description: 'ID of the HTTP API',
+      value: this.httpApi.apiId,
+    });
+
+    // Alarms. Without a dashboard; missing data
+    // never breaches, so idle functions and queues stay in the OK state.
+    const alarms: Record<string, cloudwatch.Alarm> = {};
+    const addAlarm = (
+      id: string,
+      name: string,
+      description: string,
+      metric: cloudwatch.IMetric,
+      props: {
+        readonly threshold: number;
+        readonly evaluationPeriods?: number;
+        readonly datapointsToAlarm?: number;
+      },
+    ) => {
+      const alarmName = `${CLAIMFLOW_ALARM_PREFIX}-${name}`;
+      alarms[alarmName] = new cloudwatch.Alarm(this, id, {
+        alarmName,
+        alarmDescription: description,
+        metric,
+        threshold: props.threshold,
+        evaluationPeriods: props.evaluationPeriods ?? 1,
+        ...(props.datapointsToAlarm === undefined
+          ? {}
+          : { datapointsToAlarm: props.datapointsToAlarm }),
+        comparisonOperator:
+          cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    };
+
+    const apiPeriod = cdk.Duration.minutes(CLAIMFLOW_ALARM_API_PERIOD_MINUTES);
+    addAlarm(
+      'ApiServerErrorRateAlarm',
+      'api-5xx-rate',
+      `At least ${CLAIMFLOW_ALARM_API_5XX_PERCENT}% of HTTP API requests returned 5xx in ${CLAIMFLOW_ALARM_API_DATAPOINTS_TO_ALARM} of ${CLAIMFLOW_ALARM_API_EVALUATION_PERIODS} periods of ${CLAIMFLOW_ALARM_API_PERIOD_MINUTES} minutes. Periods without requests have no data and do not breach.`,
+      new cloudwatch.MathExpression({
+        expression: `IF(requests > 0, 100 * FILL(errors, 0) / requests, 0)`,
+        usingMetrics: {
+          errors: this.httpApi.metricServerError({
+            statistic: 'Sum',
+            period: apiPeriod,
+          }),
+          requests: this.httpApi.metricCount({
+            statistic: 'Sum',
+            period: apiPeriod,
+          }),
+        },
+        label: '5xx percentage',
+        period: apiPeriod,
+      }),
+      {
+        threshold: CLAIMFLOW_ALARM_API_5XX_PERCENT,
+        evaluationPeriods: CLAIMFLOW_ALARM_API_EVALUATION_PERIODS,
+        datapointsToAlarm: CLAIMFLOW_ALARM_API_DATAPOINTS_TO_ALARM,
+      },
+    );
+
+    const lambdaPeriod = cdk.Duration.minutes(
+      CLAIMFLOW_ALARM_LAMBDA_PERIOD_MINUTES,
+    );
+    const functions: [string, string, nodejs.NodejsFunction][] = [
+      ['Api', CLAIMFLOW_API_FUNCTION_NAME, this.apiFunction],
+      ['CleanupWorker', CLAIMFLOW_CLEANUP_WORKER_NAME, this.cleanupWorker],
+      [
+        'OutboxPublisher',
+        CLAIMFLOW_OUTBOX_PUBLISHER_NAME,
+        this.outboxPublisher,
+      ],
+      ['ReceiptJanitor', CLAIMFLOW_RECEIPT_JANITOR_NAME, this.receiptJanitor],
+      ['OutboxSweeper', CLAIMFLOW_OUTBOX_SWEEPER_NAME, this.outboxSweeper],
+    ];
+    for (const [id, name, fn] of functions) {
+      addAlarm(
+        `${id}ErrorsAlarm`,
+        `${name.replace(/^claimflow-/, '')}-errors`,
+        `${name} had ${CLAIMFLOW_ALARM_FAULT_THRESHOLD} or more invocation errors in ${CLAIMFLOW_ALARM_LAMBDA_PERIOD_MINUTES} minutes.`,
+        fn.metricErrors({ statistic: 'Sum', period: lambdaPeriod }),
+        { threshold: CLAIMFLOW_ALARM_FAULT_THRESHOLD },
+      );
+      addAlarm(
+        `${id}ThrottlesAlarm`,
+        `${name.replace(/^claimflow-/, '')}-throttles`,
+        `${name} was throttled ${CLAIMFLOW_ALARM_FAULT_THRESHOLD} or more times in ${CLAIMFLOW_ALARM_LAMBDA_PERIOD_MINUTES} minutes.`,
+        fn.metricThrottles({ statistic: 'Sum', period: lambdaPeriod }),
+        { threshold: CLAIMFLOW_ALARM_FAULT_THRESHOLD },
+      );
+    }
+
+    // Only stream consumers report an iterator age; it is missing when idle.
+    const iteratorPeriod = cdk.Duration.minutes(
+      CLAIMFLOW_ALARM_ITERATOR_PERIOD_MINUTES,
+    );
+    for (const [id, name, fn] of [
+      [
+        'OutboxPublisher',
+        CLAIMFLOW_OUTBOX_PUBLISHER_NAME,
+        this.outboxPublisher,
+      ],
+      ['ReceiptJanitor', CLAIMFLOW_RECEIPT_JANITOR_NAME, this.receiptJanitor],
+    ] as const) {
+      addAlarm(
+        `${id}IteratorAgeAlarm`,
+        `${name.replace(/^claimflow-/, '')}-iterator-age`,
+        `${name} is ${CLAIMFLOW_ALARM_ITERATOR_AGE_MINUTES} minutes or more behind the table stream for ${CLAIMFLOW_ALARM_ITERATOR_EVALUATION_PERIODS} consecutive periods of ${CLAIMFLOW_ALARM_ITERATOR_PERIOD_MINUTES} minutes.`,
+        fn.metric('IteratorAge', {
+          statistic: 'Maximum',
+          period: iteratorPeriod,
+          unit: cloudwatch.Unit.MILLISECONDS,
+        }),
+        {
+          threshold: cdk.Duration.minutes(
+            CLAIMFLOW_ALARM_ITERATOR_AGE_MINUTES,
+          ).toMilliseconds(),
+          evaluationPeriods: CLAIMFLOW_ALARM_ITERATOR_EVALUATION_PERIODS,
+        },
+      );
+    }
+
+    const queuePeriod = cdk.Duration.minutes(
+      CLAIMFLOW_ALARM_QUEUE_PERIOD_MINUTES,
+    );
+    for (const [id, name, queue] of [
+      [
+        'CleanupDeadLetter',
+        CLAIMFLOW_CLEANUP_DLQ_NAME,
+        this.cleanupDeadLetterQueue,
+      ],
+      [
+        'OutboxFailure',
+        CLAIMFLOW_OUTBOX_FAILURE_QUEUE_NAME,
+        this.outboxFailureQueue,
+      ],
+      [
+        'JanitorFailure',
+        CLAIMFLOW_JANITOR_FAILURE_QUEUE_NAME,
+        this.janitorFailureQueue,
+      ],
+    ] as const) {
+      addAlarm(
+        `${id}QueueDepthAlarm`,
+        `${name.replace(/^claimflow-/, '')}-visible-messages`,
+        `${name} holds ${CLAIMFLOW_ALARM_FAULT_THRESHOLD} or more visible messages: something failed and was set aside.`,
+        queue.metricApproximateNumberOfMessagesVisible({
+          statistic: 'Maximum',
+          period: queuePeriod,
+        }),
+        { threshold: CLAIMFLOW_ALARM_FAULT_THRESHOLD },
+      );
+    }
+    addAlarm(
+      'OldestPendingOutboxAgeAlarm',
+      'oldest-pending-outbox-age',
+      `The oldest outbox event the sweeper selected has waited ${CLAIMFLOW_ALARM_OUTBOX_AGE_SECONDS / 60} minutes or more, in ${CLAIMFLOW_ALARM_OUTBOX_AGE_EVALUATION_PERIODS} consecutive periods of ${CLAIMFLOW_ALARM_OUTBOX_AGE_PERIOD_MINUTES} minutes. The sweeper reports 0 when nothing is overdue; a missing report does not breach.`,
+      new cloudwatch.Metric({
+        namespace: CLAIMFLOW_ALARM_OUTBOX_AGE_NAMESPACE,
+        metricName: CLAIMFLOW_ALARM_OUTBOX_AGE_METRIC,
+        statistic: 'Maximum',
+        unit: cloudwatch.Unit.SECONDS,
+        period: cdk.Duration.minutes(CLAIMFLOW_ALARM_OUTBOX_AGE_PERIOD_MINUTES),
+      }),
+      {
+        threshold: CLAIMFLOW_ALARM_OUTBOX_AGE_SECONDS,
+        evaluationPeriods: CLAIMFLOW_ALARM_OUTBOX_AGE_EVALUATION_PERIODS,
+      },
+    );
+    this.alarms = alarms;
+
+    // Email delivery. The address is a required NoEcho parameter, never a
+    // literal or an output. The subscription stays pending until its owner
+    // confirms it from the message SNS sends.
+    const alarmEmail = new cdk.CfnParameter(
+      this,
+      CLAIMFLOW_ALARM_EMAIL_PARAMETER,
+      {
+        type: 'String',
+        noEcho: true,
+        description:
+          'Email address that receives ClaimFlow alarm notifications. SNS asks it to confirm the subscription.',
+        allowedPattern: '^[^@ ]+@[^@ ]+[.][^@ ]+$',
+        constraintDescription: 'Enter a valid email address.',
+      },
+    );
+    // A standard topic with the default SNS encryption state (no customer
+    // managed key) that denies any publish over plain HTTP.
+    this.alarmTopic = new sns.Topic(this, 'AlarmTopic', {
+      topicName: CLAIMFLOW_ALARM_TOPIC_NAME,
+      enforceSSL: true,
+    });
+    this.alarmTopic.addSubscription(
+      new snsSubscriptions.EmailSubscription(alarmEmail.valueAsString),
+    );
+    // CloudWatch may publish only for this account's ClaimFlow alarms.
+    this.alarmTopic.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'AllowClaimFlowAlarmsToPublish',
+        effect: iam.Effect.ALLOW,
+        principals: [new iam.ServicePrincipal('cloudwatch.amazonaws.com')],
+        actions: ['sns:Publish'],
+        resources: [this.alarmTopic.topicArn],
+        conditions: {
+          StringEquals: { 'aws:SourceAccount': this.account },
+          ArnLike: {
+            'aws:SourceArn': this.formatArn({
+              service: 'cloudwatch',
+              resource: 'alarm',
+              resourceName: `${CLAIMFLOW_ALARM_PREFIX}-*`,
+              arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+            }),
+          },
+        },
+      }),
+    );
+    // ALARM only: no OK or insufficient-data notifications.
+    const alarmAction: cloudwatch.IAlarmAction = {
+      bind: () => ({ alarmActionArn: this.alarmTopic.topicArn }),
+    };
+    for (const alarm of Object.values(alarms)) {
+      alarm.addAlarmAction(alarmAction);
+    }
   }
 }

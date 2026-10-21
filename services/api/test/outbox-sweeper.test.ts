@@ -82,6 +82,7 @@ class FakePublication implements SweepPublication {
 let reader: FakeReader;
 let publication: FakePublication;
 let clockReads: number;
+const metrics = { record: vi.fn<(age: number, at: Date) => void>() };
 
 const sweeper = (clockNow: () => Date = () => now) =>
   createOutboxSweeper({
@@ -93,12 +94,14 @@ const sweeper = (clockNow: () => Date = () => now) =>
         return clockNow();
       },
     },
+    metrics,
   });
 
 beforeEach(() => {
   reader = new FakeReader();
   publication = new FakePublication();
   clockReads = 0;
+  metrics.record.mockReset();
 });
 
 describe('selection', () => {
@@ -225,5 +228,90 @@ describe('failures', () => {
     await expect(sweeper()()).rejects.toBeInstanceOf(OutboxSweepError);
     expect(spy).toHaveBeenCalledTimes(1);
     expect(reader.queries).toHaveLength(1);
+  });
+});
+
+describe('oldest pending age metric', () => {
+  const at = (iso: string) => ({
+    ...storedEvent(1),
+    event: { ...eventNumber(1), occurredAt: iso },
+  });
+
+  it('reports 0 when no event is older than the grace period', async () => {
+    await sweeper()();
+
+    expect(metrics.record).toHaveBeenCalledExactlyOnceWith(0, now);
+  });
+
+  it('reports the age of the oldest selected event, ignoring order', async () => {
+    reader.items = [
+      at('2026-10-14T10:40:00.000Z'),
+      at('2026-10-14T10:20:30.000Z'),
+      at('2026-10-14T10:30:00.000Z'),
+    ];
+
+    await sweeper()();
+
+    // 10:50:00.123 - 10:20:30.000 = 1770.123 s, floored.
+    expect(metrics.record).toHaveBeenCalledExactlyOnceWith(1770, now);
+  });
+
+  it('uses the single clock reading for the cutoff, the age, and the timestamp', async () => {
+    reader.items = [at('2026-10-14T10:49:00.000Z')];
+
+    await sweeper()();
+
+    expect(clockReads).toBe(1);
+    expect(metrics.record).toHaveBeenCalledWith(60, now);
+  });
+
+  it('reports before publishing', async () => {
+    const order: string[] = [];
+    metrics.record.mockImplementation(() => void order.push('metric'));
+    publication.publish = (records) => {
+      order.push('publish');
+      void records;
+      return Promise.resolve({ firstFailedSequenceNumber: undefined });
+    };
+    reader.items = [storedEvent(1)];
+
+    await sweeper()();
+
+    expect(order).toEqual(['metric', 'publish']);
+  });
+
+  it('still reports when publication then fails', async () => {
+    reader.items = [storedEvent(1)];
+    publication.result = { firstFailedSequenceNumber: eventNumber(1).eventId };
+
+    await expect(sweeper()()).rejects.toBeInstanceOf(OutboxSweepError);
+
+    expect(metrics.record).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report when the query fails', async () => {
+    reader.failure = new Error('Rate exceeded');
+
+    await expect(sweeper()()).rejects.toBe(reader.failure);
+
+    expect(metrics.record).not.toHaveBeenCalled();
+  });
+
+  it('publishes even if the recorder throws', async () => {
+    metrics.record.mockImplementation(() => {
+      throw new Error('stdout closed');
+    });
+    reader.items = [storedEvent(1), storedEvent(2)];
+
+    expect(await sweeper()()).toEqual({ selected: 2 });
+    expect(publication.calls).toHaveLength(1);
+  });
+
+  it('publishes even if an event timestamp is unreadable, and reports nothing', async () => {
+    reader.items = [at('not a time')];
+
+    expect(await sweeper()()).toEqual({ selected: 1 });
+    expect(metrics.record).not.toHaveBeenCalled();
+    expect(publication.calls).toHaveLength(1);
   });
 });

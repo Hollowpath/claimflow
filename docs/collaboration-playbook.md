@@ -1,5 +1,7 @@
 # ClaimFlow collaboration rules
 
+ClaimFlow was built with a two-role AI-assisted workflow. Claude Code implemented the changes in this repository; Codex independently inspected the code, planned increments, and reviewed the results without editing application files; and the human owner kept authority over deployment and every AWS write (and over commits and pushes). The separation is a working process, not an assurance: it does not replace automated tests, manual verification, or human judgment, and an agent's report is not verification on its own. The rules below keep the roles distinct.
+
 Apply to both Codex and Claude Code. Minimize total token use and rework, not just response length.
 
 ## Codex operating limits

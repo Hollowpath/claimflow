@@ -9,6 +9,7 @@ import type { ApiError } from '../api/client';
 import { api } from '../api/claimflow';
 import { formatDateTime, formatFileSize } from '../lib/format';
 import { toApiError } from '../lib/use-resource';
+import { useSession } from '../session';
 import { ErrorNotice } from './ui';
 
 /** View the receipt; the owner of a draft can also upload, replace, remove. */
@@ -21,6 +22,7 @@ export function ReceiptPanel({
   readonly onChange: (claim: ClaimDto) => void;
   readonly onReload: () => void;
 }) {
+  const { authMode } = useSession();
   const input = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
@@ -28,6 +30,18 @@ export function ReceiptPanel({
   const [localError, setLocalError] = useState<string | null>(null);
   const { receipt } = claim;
   const editable = claim.permissions.canEdit;
+
+  async function openReceipt() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.openReceipt(claim.claimId);
+    } catch (caught) {
+      setError(toApiError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function run(action: () => Promise<ClaimDto>) {
     setBusy(true);
@@ -67,13 +81,24 @@ export function ReceiptPanel({
         <p className="muted">No receipt attached.</p>
       ) : (
         <div className="receipt">
-          <a
-            href={api.receiptUrl(claim.claimId)}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {receipt.fileName}
-          </a>
+          {authMode === 'cognito' ? (
+            <button
+              type="button"
+              className="link-button"
+              disabled={busy}
+              onClick={() => void openReceipt()}
+            >
+              {receipt.fileName}
+            </button>
+          ) : (
+            <a
+              href={api.receiptUrl(claim.claimId)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {receipt.fileName}
+            </a>
+          )}
           <span className="muted">
             {formatFileSize(receipt.sizeBytes)} · added{' '}
             {formatDateTime(receipt.attachedAt)}

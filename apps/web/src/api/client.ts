@@ -1,10 +1,12 @@
 import {
-  apiBasePath,
   headers,
   type ApiErrorCode,
   type ErrorResponse,
   type FieldError,
 } from '@claimflow/contracts';
+
+import { AuthError, getAuth, type CognitoAuth } from '../auth';
+import { getRuntimeConfig } from '../config';
 
 /** A failed API call with the server's safe message and field details. */
 export class ApiError extends Error {
@@ -44,10 +46,14 @@ const retryDelayMs = 300;
 const unreachableMessage =
   'Cannot reach the ClaimFlow API. Check that it is running.';
 
+const signInRequiredMessage = 'Your sign-in has ended. Sign in again.';
+
 /**
- * Calls the local API. Every mutation carries a fresh idempotency key that is
+ * Calls the API. Every mutation carries a fresh idempotency key that is
  * reused if a network failure forces one automatic retry, so a request that
- * reached the server is never applied twice.
+ * reached the server is never applied twice. With Cognito sign-in the access
+ * token is sent as a Bearer token; if the API still answers 401 the token is
+ * refreshed and the request repeated once, and a failed refresh signs out.
  */
 export async function request<T>(
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
@@ -68,27 +74,37 @@ export async function request<T>(
     requestHeaders[headers.idempotencyKey] = crypto.randomUUID();
   }
 
-  const init: RequestInit = {
-    method,
-    headers: requestHeaders,
-    credentials: 'same-origin',
-    ...(body === undefined ? {} : { body }),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-  };
+  const url = `${getRuntimeConfig().apiBaseUrl}${path}`;
+  const auth = getAuth();
+  const send = (token: string | null) =>
+    fetchWithRetry(url, {
+      method,
+      headers:
+        token === null
+          ? requestHeaders
+          : { ...requestHeaders, Authorization: `Bearer ${token}` },
+      credentials: 'same-origin',
+      ...(body === undefined ? {} : { body }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
 
-  let response: Response;
-  try {
-    response = await fetch(`${apiBasePath}${path}`, init);
-  } catch (error) {
-    if (options.signal?.aborted === true) {
-      throw error;
+  let token: string | null = null;
+  if (auth !== null) {
+    token = await guardAuth(() => auth.getAccessToken());
+    if (token === null) {
+      throw signedOut(auth);
     }
-    await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-    try {
-      response = await fetch(`${apiBasePath}${path}`, init);
-    } catch {
-      throw new ApiError(0, 'NETWORK_ERROR', unreachableMessage);
+  }
+  let response = await send(token);
+  if (auth !== null && token !== null && response.status === 401) {
+    const rejected = token;
+    const fresh = await guardAuth(() =>
+      auth.refreshAfterUnauthorized(rejected),
+    );
+    if (fresh === null) {
+      throw signedOut(auth);
     }
+    response = await send(fresh);
   }
 
   if (response.status === 204) {
@@ -98,11 +114,51 @@ export async function request<T>(
     return (await response.json()) as T;
   }
 
+  if (auth !== null && response.status === 401) {
+    throw signedOut(auth);
+  }
   const error = await toApiError(response);
   if (error.code === 'UNAUTHENTICATED') {
     onUnauthenticated();
   }
   throw error;
+}
+
+/** Token lookups fail only when the sign-in service is unreachable. */
+async function guardAuth<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof AuthError) {
+      throw new ApiError(0, 'NETWORK_ERROR', error.message);
+    }
+    throw error;
+  }
+}
+
+function signedOut(auth: CognitoAuth): ApiError {
+  auth.clearLocal();
+  onUnauthenticated();
+  return new ApiError(401, 'UNAUTHENTICATED', signInRequiredMessage);
+}
+
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (error) {
+    if (init.signal?.aborted === true) {
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    try {
+      return await fetch(url, init);
+    } catch {
+      throw new ApiError(0, 'NETWORK_ERROR', unreachableMessage);
+    }
+  }
 }
 
 async function toApiError(response: Response): Promise<ApiError> {

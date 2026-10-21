@@ -27,9 +27,18 @@ describe('outbox sweeper Lambda entry point', () => {
     const send = vi
       .spyOn(DynamoDBDocumentClient.prototype, 'send')
       .mockResolvedValue({ Items: [] } as never);
+    const written: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
     const { handler } = await import(entryPoint);
 
     await expect(handler()).resolves.toEqual({ selected: 0 });
+
+    const metric = written.map((line) => JSON.parse(line)).at(-1);
+    expect(metric.OldestPendingOutboxAge).toBe(0);
+    expect(metric._aws.CloudWatchMetrics[0].Namespace).toBe('ClaimFlow');
 
     expect(send).toHaveBeenCalledTimes(1);
     const command = send.mock.calls.at(0)?.at(0) as QueryCommand;

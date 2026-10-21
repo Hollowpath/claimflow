@@ -8,14 +8,16 @@ import { ErrorNotice } from './ui';
 import type { ApiError } from '../api/client';
 
 export function Layout({ children }: { readonly children: ReactNode }) {
-  const { user, hasRole } = useSession();
+  const { user, hasRole, authMode } = useSession();
 
   return (
     <div className="app">
-      <div className="sim-banner" role="note">
-        Development sign-in: any sample user can be selected without a password.
-        Not for real data.
-      </div>
+      {authMode === 'local' && (
+        <div className="sim-banner" role="note">
+          Development sign-in: any sample user can be selected without a
+          password. Not for real data.
+        </div>
+      )}
       <header className="topbar">
         <div className="topbar-inner">
           <NavLink to="/" className="brand">
@@ -45,10 +47,25 @@ export function Layout({ children }: { readonly children: ReactNode }) {
               )}
             </nav>
           )}
-          <UserSwitcher />
+          {authMode === 'cognito' ? <AccountMenu /> : <UserSwitcher />}
         </div>
       </header>
       <main className="content">{children}</main>
+    </div>
+  );
+}
+
+function AccountMenu() {
+  const { user, signOut } = useSession();
+  if (user === null) {
+    return null;
+  }
+  return (
+    <div className="user-switcher">
+      <span>{user.displayName}</span>
+      <button type="button" onClick={() => void signOut()}>
+        Sign out
+      </button>
     </div>
   );
 }

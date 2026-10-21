@@ -3,17 +3,30 @@ info:
   title: ClaimFlow API
   version: 1.0.0
   description: >
-    Employee expense and reimbursement API: claims, receipts, manager review,
-    category policy, and payment. In the local development runtime, sessions
-    use development sign-in with a signed cookie that selects a sample user
-    (not production authentication); the server always loads roles and
-    manager assignments itself. See docs/api.md for conventions.
+    Employee expense and reimbursement API: claims, receipts, manager
+    review, category policy, and payment. The same routes are served by two
+    runtimes. The local development runtime signs users in with a signed
+    cookie that selects a sample user (not production authentication). The
+    deployed AWS runtime sits behind an API Gateway JWT authorizer that
+    requires a Cognito access token sent as a Bearer token. In both, the
+    server always loads roles and manager assignments itself. Operations
+    that differ between the runtimes say so, and `x-claimflow-runtime`
+    marks each operation as `local`, `aws`, or both. See docs/api.md for
+    conventions.
 servers:
   - url: http://localhost:3001/api/v1
+    description: Local runtime
   - url: http://localhost:5173/api/v1
-    description: Through the Vite development proxy
+    description: Local runtime through the Vite development proxy
+  - url: https://{apiId}.execute-api.ap-southeast-1.amazonaws.com/api/v1
+    description: Deployed AWS runtime (the `ApiBaseUrl` stack output)
+    variables:
+      apiId:
+        default: YOUR_API_ID
+        description: The HTTP API ID (the `ApiId` stack output).
 security:
   - session: []
+  - cognitoAccessToken: []
 
 tags:
   - name: Session
@@ -36,6 +49,8 @@ paths:
     get:
       tags: [Session]
       summary: Liveness check
+      description: Public in both runtimes.
+      x-claimflow-runtime: [local, aws]
       security: []
       responses:
         '200':
@@ -51,19 +66,28 @@ paths:
   /session:
     get:
       tags: [Session]
-      summary: Current user and selectable local users
+      summary: Current user (and, locally, the selectable users)
       description: >-
-        In the AWS runtime, describes only the Cognito-authenticated user and
-        returns an empty `users` list.
-      security: []
+        Local runtime: needs no credentials; `user` is `null` until a
+        sample user is selected, and `users` lists the selectable sample
+        users. AWS runtime: requires a valid Cognito access token (the API
+        Gateway authorizer rejects the request otherwise); `user` is the
+        signed-in user and `users` is always empty.
+      x-claimflow-runtime: [local, aws]
+      security:
+        - {}
+        - session: []
+        - cognitoAccessToken: []
       responses:
         '200': { $ref: '#/components/responses/Session' }
     put:
       tags: [Session]
-      summary: Select a local user
+      summary: Select a local user (local runtime only)
       description: >-
         Sets the `claimflow_session` cookie. Local development runtime only;
-        not available in the AWS runtime.
+        this route does not exist in the AWS runtime, where users sign in
+        with Cognito.
+      x-claimflow-runtime: [local]
       security: []
       requestBody:
         required: true
@@ -86,8 +110,12 @@ paths:
         '400': { $ref: '#/components/responses/ValidationFailed' }
     delete:
       tags: [Session]
-      summary: Sign out
-      description: Local development runtime only; not available in the AWS runtime.
+      summary: Sign out (local runtime only)
+      description: >-
+        Clears the session cookie. Local development runtime only; this route
+        does not exist in the AWS runtime, where the web application signs out
+        through the Cognito logout endpoint.
+      x-claimflow-runtime: [local]
       security: []
       responses:
         '200': { $ref: '#/components/responses/Session' }
@@ -353,12 +381,37 @@ paths:
   /receipts:
     post:
       tags: [Receipts]
-      summary: Upload a receipt file (employee)
+      summary: Upload a receipt, or request a presigned upload (employee)
+      description: >
+        The request body decides the variant, and the runtimes differ.
+
+
+        **Local runtime:** send the raw file as the body with its receipt
+        content type (`application/pdf`, `image/jpeg`, or `image/png`).
+        The server measures and stores it and answers `201` with
+        `UploadedReceipt`. A JSON declaration is not served: it is treated
+        as a raw file and rejected because `application/json` is not a
+        receipt type.
+
+
+        **AWS runtime:** send a JSON `ReceiptUploadDeclaration`. The API
+        never receives the file. It answers `201` with
+        `ReceiptUploadTarget`, whose `form` is a presigned S3 POST form
+        (valid for 15 minutes) that the client submits directly to S3 as
+        `multipart/form-data`, with every returned field before the `file`
+        field. A replay with the same idempotency key returns the same
+        `receiptId` with a newly signed form. After S3 accepts the upload,
+        attach it with `PUT /claims/{claimId}/receipt`. The raw-file
+        content types below are not served in this runtime.
+      x-claimflow-runtime: [local, aws]
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - name: X-File-Name
           in: header
-          description: URI-encoded original file name; sanitized by the server.
+          description: >-
+            Local runtime only: URI-encoded original file name, sanitized by
+            the server. Ignored by the AWS variant, which takes `fileName`
+            from the declaration.
           schema: { type: string }
       requestBody:
         required: true
@@ -369,12 +422,19 @@ paths:
             schema: { type: string, format: binary }
           image/png:
             schema: { type: string, format: binary }
+          application/json:
+            schema: { $ref: '#/components/schemas/ReceiptUploadDeclaration' }
       responses:
         '201':
-          description: Stored and measured by the server.
+          description: >-
+            Local runtime (raw file): the stored, measured upload. AWS runtime
+            (JSON declaration): the receipt ID and the presigned form.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/UploadedReceipt' }
+              schema:
+                oneOf:
+                  - { $ref: '#/components/schemas/UploadedReceipt' }
+                  - { $ref: '#/components/schemas/ReceiptUploadTarget' }
         '400': { $ref: '#/components/responses/ValidationFailed' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -386,11 +446,26 @@ paths:
     get:
       tags: [Receipts]
       summary: Download the claim's receipt
+      description: >
+        **Local runtime:** the receipt file itself, served inline, with its
+        own content type.
+
+
+        **AWS runtime:** a JSON `ReceiptDownloadTarget` holding a presigned S3
+        URL that is valid for 5 minutes. The client requests it with its
+        Bearer token and then navigates to the URL without sending that
+        token to S3. The response is `Cache-Control: no-store` because the
+        URL is a short-lived capability and should not be logged or shared.
+      x-claimflow-runtime: [local, aws]
       responses:
         '200':
-          description: The receipt file, served inline.
+          description: >-
+            Local runtime: the receipt file, served inline. AWS runtime: the
+            presigned download URL.
           headers:
-            Content-Disposition: { schema: { type: string } }
+            Content-Disposition:
+              description: Local runtime only.
+              schema: { type: string }
           content:
             application/pdf:
               schema: { type: string, format: binary }
@@ -398,6 +473,8 @@ paths:
               schema: { type: string, format: binary }
             image/png:
               schema: { type: string, format: binary }
+            application/json:
+              schema: { $ref: '#/components/schemas/ReceiptDownloadTarget' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '404': { $ref: '#/components/responses/NotFound' }
     put:
@@ -435,6 +512,20 @@ components:
       type: apiKey
       in: cookie
       name: claimflow_session
+      description: >-
+        Local runtime only: a signed cookie set by `PUT /session`
+        (development sign-in, not production authentication).
+    cognitoAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        AWS runtime only: a Cognito user pool access token (not the ID token)
+        issued to the `ClaimFlowWeb` app client with the `openid` scope,
+        obtained through the hosted UI with the authorization code flow and
+        PKCE. API Gateway validates the issuer, audience, expiry, and scope
+        before the API runs; only the token's `sub` is used, and roles and
+        manager come from the user's profile.
 
   parameters:
     ClaimId:
@@ -486,7 +577,9 @@ components:
 
   responses:
     Session:
-      description: The current development session.
+      description: >-
+        The current session: the signed-in user (or `null`) and, in the local
+        runtime, the selectable sample users.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Session' }
@@ -518,7 +611,13 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
     Unauthenticated:
-      description: No local user is selected (`UNAUTHENTICATED`).
+      description: >-
+        Local runtime: no user is selected (`UNAUTHENTICATED`). AWS runtime:
+        the API Gateway authorizer rejects a missing, invalid, or expired
+        access token before the API runs, with its own `401` body (not this
+        schema), and a token whose subject has no user profile gets
+        `UNAUTHENTICATED` from the API. A token without the required
+        `openid` scope is refused by the gateway with `403`.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -755,6 +854,56 @@ components:
         sizeBytes: { type: integer, minimum: 1, maximum: 10485760 }
         checksumSha256: { type: string, pattern: '^[a-f0-9]{64}$' }
         uploadedAt: { type: string, format: date-time }
+    ReceiptUploadDeclaration:
+      type: object
+      additionalProperties: false
+      description: AWS runtime only. The domain applies the receipt rules.
+      required: [fileName, contentType, sizeBytes, checksumSha256]
+      properties:
+        fileName: { type: string, minLength: 1, maxLength: 1000 }
+        contentType:
+          type: string
+          maxLength: 255
+          description: Must be one of the receipt content types.
+        sizeBytes:
+          type: integer
+          minimum: 1
+          maximum: 10485760
+        checksumSha256:
+          type: string
+          maxLength: 128
+          description: Lower-case hex SHA-256 of the file (64 characters).
+    UploadForm:
+      type: object
+      required: [url, fields]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: The S3 endpoint to POST the form to (https).
+        fields:
+          type: object
+          additionalProperties: { type: string }
+          description: >-
+            Signed form fields, including the policy and signature. Send every
+            one, in this order, before the `file` field.
+    ReceiptUploadTarget:
+      type: object
+      description: AWS runtime only.
+      required: [receiptId, form]
+      properties:
+        receiptId: { type: string }
+        form: { $ref: '#/components/schemas/UploadForm' }
+    ReceiptDownloadTarget:
+      type: object
+      description: AWS runtime only.
+      required: [url, expiresAt]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Presigned S3 URL (https); treat it as a credential.
+        expiresAt: { type: string, format: date-time }
     Claim:
       type: object
       required:

@@ -1,3 +1,4 @@
+import type { ReceiptUploadDeclaration } from '@claimflow/contracts';
 import {
   hasRole,
   isChecksumSha256,
@@ -32,8 +33,8 @@ import type {
 
 /**
  * The receipt upload-target flow of docs/aws-architecture.md, section 11,
- * "Upload", as an isolated application flow that no route or composition uses
- * yet: a declaration `{ fileName, contentType, sizeBytes, checksumSha256 }`
+ * "Upload", as an application flow that only an explicitly registered AWS route uses
+ * (no production composition does): a declaration `{ fileName, contentType, sizeBytes, checksumSha256 }`
  * becomes pending receipt metadata, an atomic idempotency record holding only
  * a reference to the receipt, and a fresh presigned upload form. It runs
  * through `ReceiptUploadCoordinator.run`, so a replay returns the stored
@@ -62,7 +63,7 @@ const declarationSchema = z.strictObject({
   contentType: z.string().max(255),
   sizeBytes: z.number(),
   checksumSha256: z.string().max(128),
-});
+}) satisfies z.ZodType<ReceiptUploadDeclaration>;
 
 export class AwsReceiptUploadTargetService {
   public constructor(

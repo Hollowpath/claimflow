@@ -1,6 +1,10 @@
 import type { Clock } from '../../application/ports.js';
 import type { StoredOutboxEvent } from './dynamodb-outbox-items.js';
 import { maxPendingBatch } from './dynamodb-pending-outbox.js';
+import {
+  oldestPendingAgeSeconds,
+  type OldestPendingOutboxAgeRecorder,
+} from './oldest-pending-outbox-metric.js';
 import type {
   PublicationRecord,
   PublicationResult,
@@ -11,7 +15,9 @@ import type {
  * republishes events still pending after the stream path failed or expired.
  * Events younger than a five-minute grace period are left to the stream path.
  * One invocation handles one batch of at most 10 events, with no loop and no
- * retry of its own; a scheduled retry is requested by throwing.
+ * retry of its own; a scheduled retry is requested by throwing. Before it
+ * publishes, it reports the age of the oldest selected event (0 for none) as
+ * a metric; a failure to report never stops the publication.
  */
 
 /** Events newer than this are left to the stream path. */
@@ -34,6 +40,7 @@ export interface OutboxSweeperOptions {
   readonly pending: PendingOutboxReader;
   readonly publication: SweepPublication;
   readonly clock: Clock;
+  readonly metrics: OldestPendingOutboxAgeRecorder;
 }
 
 export interface SweepResult {
@@ -55,14 +62,20 @@ export function createOutboxSweeper({
   pending,
   publication,
   clock,
+  metrics,
 }: OutboxSweeperOptions): OutboxSweeper {
   return async () => {
-    // One reading, so the cutoff is exactly the grace period before it.
-    const cutoff = new Date(
-      clock.now().getTime() - sweepGracePeriodMs,
-    ).toISOString();
+    // One reading, so the cutoff is exactly the grace period before it and
+    // the reported age is measured from the same instant.
+    const now = clock.now();
+    const cutoff = new Date(now.getTime() - sweepGracePeriodMs).toISOString();
 
     const stored = await pending.listPending(cutoff, maxPendingBatch);
+    try {
+      metrics.record(oldestPendingAgeSeconds(stored, now), now);
+    } catch {
+      // Observability must not stop events from being published.
+    }
     if (stored.length === 0) {
       return { selected: 0 };
     }

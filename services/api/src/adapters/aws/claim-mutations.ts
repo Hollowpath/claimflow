@@ -7,6 +7,7 @@ import type {
   IdempotentMutation,
   IdempotentMutationRequest,
 } from '../../http/api-handler.js';
+import type { AwsCategoryService } from './aws-category-service.js';
 import type { AwsClaimCreationService } from './aws-claim-creation-service.js';
 import type { AwsClaimDraftEditingService } from './aws-claim-draft-editing-service.js';
 import type { AwsClaimLifecycleService } from './aws-claim-lifecycle-service.js';
@@ -14,6 +15,7 @@ import type {
   AwsDraftDeletionService,
   AwsReceiptRemovalService,
 } from './aws-claim-removal-services.js';
+import type { AwsReceiptUploadTargetService } from './aws-receipt-upload-target-service.js';
 import type { AwsReceiptAttachmentService } from './aws-receipt-attachment-service.js';
 import type { IdempotencyRecord } from './dynamodb-idempotency-items.js';
 
@@ -161,4 +163,94 @@ export function claimDeleteMutation(
         eventContext(request),
       ),
     );
+}
+
+/** The route's category ID, as the matched route decoded it. */
+function categoryIdOf(request: IdempotentMutationRequest): string {
+  const categoryId = request.params.categoryId;
+  if (categoryId === undefined) {
+    throw new TypeError('The route has no category ID.');
+  }
+  return categoryId;
+}
+
+/** `category.create`: the category is created from the body (`201`). */
+export function categoryCreateMutation(
+  service: Pick<AwsCategoryService, 'create'>,
+): IdempotentMutation {
+  return async (request) =>
+    storedResponse(
+      await service.create(request.actor, request.body, eventContext(request)),
+    );
+}
+
+/** `category.update`: the route's category is changed with the body. */
+export function categoryUpdateMutation(
+  service: Pick<AwsCategoryService, 'update'>,
+): IdempotentMutation {
+  return async (request) =>
+    storedResponse(
+      await service.update(
+        request.actor,
+        categoryIdOf(request),
+        request.body,
+        eventContext(request),
+      ),
+    );
+}
+
+/** `category.delete`: the route's unused category is deleted (`204`). */
+export function categoryDeleteMutation(
+  service: Pick<AwsCategoryService, 'delete'>,
+): IdempotentMutation {
+  return async (request) =>
+    storedResponse(
+      await service.delete(
+        request.actor,
+        categoryIdOf(request),
+        request.body,
+        eventContext(request),
+      ),
+    );
+}
+
+/**
+ * The body mode to register next to `receiptUploadTargetMutation`: this AWS
+ * operation reads its declaration as JSON, where the local route reads raw
+ * bytes. It is chosen here, never inferred from the content type.
+ */
+export const receiptUploadTargetBodyModes = {
+  'receipt.upload': 'json',
+} as const;
+
+/**
+ * `receipt.upload` for the AWS path: `201` with `{ receiptId, form }`. Only
+ * a reference is stored, so a replay returns the same receipt with a newly
+ * signed form; a stored rejection is returned unchanged. Every API response is
+ * `no-store`, which matters because the form is a short-lived capability; the
+ * form is never logged or persisted.
+ */
+export function receiptUploadTargetMutation(
+  service: Pick<AwsReceiptUploadTargetService, 'create'>,
+): IdempotentMutation {
+  return async (request) => {
+    const { record, upload } = await service.create(
+      request.actor,
+      request.body,
+      context(request),
+    );
+    if (!isResultReference(record.response)) {
+      return storedResponse(record);
+    }
+    if (upload === undefined) {
+      throw new TypeError('A receipt reference has no upload form.');
+    }
+    return {
+      status: 201,
+      body: {
+        receiptId: upload.receiptId,
+        form: { url: upload.form.url, fields: upload.form.fields },
+      },
+    };
+  };
 }

@@ -1,6 +1,10 @@
 # ClaimFlow
 
-ClaimFlow manages employee expense claims from submission to reimbursement. Employees record expenses and attach receipts, managers review and decide on the claims assigned to them, and finance administrators maintain category policy and mark approved claims as paid. Every change is authorized on the server and recorded in an immutable history.
+[![CI](https://github.com/Hollowpath/claimflow/actions/workflows/ci.yml/badge.svg)](https://github.com/Hollowpath/claimflow/actions/workflows/ci.yml)
+
+ClaimFlow manages employee expense claims from submission to reimbursement. Employees record expenses and attach receipts, managers review and decide on the claims assigned to them, and finance administrators maintain category policy and mark approved claims as paid. Every accepted change is authorized on the server and recorded in a history whose entries are never edited. Deleting an eligible draft (one that was never submitted) deletes its history with it.
+
+**Live site:** [ClaimFlow on AWS](https://d3vq4pyeoivioy.cloudfront.net) (serverless, `ap-southeast-1`). Sign-in uses Amazon Cognito, and accounts are created by an administrator, so the site is not open to self-registration. **Local demo mode** (`npm run dev`, below) runs the same application on your machine with selectable sample users and JSON-file storage, needs no AWS account, and is for development and evaluation only. Sample identities, organizations, claims, and transactions anywhere in this project are fictional. See [AWS deployment](#aws-deployment) for how the two differ.
 
 ## Capabilities
 
@@ -18,11 +22,71 @@ ClaimFlow manages employee expense claims from submission to reimbursement. Empl
 apps/web            React 19 + TypeScript + Vite single-page app (depends on contracts only)
 packages/domain     Pure business rules: lifecycle, authorization, policy, receipts
 packages/contracts  Shared Zod request schemas, response types, error codes
-services/api        Application services, port interfaces, adapters, HTTP server
-docs/               Domain model, API guide, OpenAPI specification, development, testing
+services/api        Application services, port interfaces, local and AWS adapters, HTTP server, Lambda entry points
+infrastructure/     AWS CDK application (TypeScript)
+docs/               Domain model, API guide, OpenAPI specification, development, testing, AWS architecture, readiness record
 ```
 
-The API is a transport-neutral TypeScript request handler, which runs locally behind an HTTP server built on `node:http`. Application services depend on port interfaces (`ClaimRepository`, `CategoryRepository`, `UserDirectory`, `ReceiptStorage`, `IdempotencyStore`, `Clock`, `IdGenerator`, `Logger`). The current implementation provides local adapters for them: JSON-file persistence, receipt files on disk, and a fixed directory of sample users.
+The API is a transport-neutral TypeScript request handler. Locally it runs behind an HTTP server built on `node:http`; on AWS it runs in a Lambda function behind an API Gateway HTTP API. Application services depend on port interfaces (`ClaimRepository`, `CategoryRepository`, `UserDirectory`, `ReceiptStorage`, `IdempotencyStore`, `Clock`, `IdGenerator`, `Logger`). The local runtime implements them with JSON-file persistence, receipt files on disk, and a fixed directory of sample users. The AWS runtime reuses the domain rules and the shared request pipeline with its own DynamoDB, S3, and Cognito adapters and services, which do not implement every local port (see [the AWS architecture](docs/aws-architecture.md#18-ports-and-adapters)). The domain rules and the API contract are the same in both.
+
+Deployed architecture (simplified; solid arrows are synchronous requests, dashed arrows are asynchronous processing):
+
+```mermaid
+flowchart LR
+  user([Browser])
+
+  subgraph web["Web delivery"]
+    cf["CloudFront"]
+    webbkt[("Private web bucket")]
+  end
+  cognito["Cognito hosted UI"]
+
+  subgraph api["API"]
+    gw["HTTP API + JWT authorizer"]
+    fn["API Lambda"]
+  end
+
+  subgraph data["Data"]
+    ddb[("DynamoDB table<br/>and stream")]
+    rcpt[("Receipt S3 bucket")]
+  end
+
+  subgraph async["Asynchronous processing"]
+    pub["Outbox publisher"]
+    sweep["Outbox sweeper<br/>every 15 minutes"]
+    bus["EventBridge bus"]
+    q["Cleanup queue"]
+    worker["Cleanup worker"]
+    janitor["Receipt janitor"]
+  end
+
+  subgraph ops["Operations"]
+    alarms["CloudWatch alarms"]
+    sns["SNS topic"]
+    mail([Email])
+  end
+
+  user --> cf --> webbkt
+  user --> cognito
+  user --> gw --> fn
+  fn --> ddb
+  fn --> rcpt
+  user -->|"presigned upload and download"| rcpt
+
+  ddb -.->|"stream: new outbox events"| pub
+  pub -.-> bus
+  bus -.->|"internal cleanup events"| q
+  q -.-> worker
+  worker -.->|"delete receipt objects"| rcpt
+  worker -.->|"purge draft history"| ddb
+  ddb -.->|"stream: TTL removals"| janitor
+  janitor -.->|"delete abandoned uploads"| rcpt
+  sweep -.->|"read pending events"| ddb
+  sweep -.->|"republish"| bus
+  alarms -.-> sns -.-> mail
+```
+
+The design, guarantees, and verification limits behind this diagram are in [the AWS architecture](docs/aws-architecture.md#4-architecture-overview).
 
 ## Local development
 
@@ -44,9 +108,9 @@ npm start          # http://localhost:3001 serves the app and the API
 
 See [Local development](docs/local-development.md) for configuration, data files, and troubleshooting.
 
-### Development sign-in
+### Development sign-in (local demo mode)
 
-The local development runtime has no passwords. Choose a sample user on the start screen or from the **Signed in as** menu. The API stores the choice in an HMAC-signed, `HttpOnly` session cookie and always loads the user's roles and manager assignment from its own directory; it never trusts identity, roles, or ownership sent by the browser.
+The local development runtime has no passwords. (The AWS deployment uses Cognito instead.) Choose a sample user on the start screen or from the **Signed in as** menu. The API stores the choice in an HMAC-signed, `HttpOnly` session cookie and always loads the user's roles and manager assignment from its own directory; it never trusts identity, roles, or ownership sent by the browser.
 
 Because anyone with access to the app can act as any sample user, this mode is for development and evaluation only and must not be used with real data.
 
@@ -96,32 +160,49 @@ npm run build
 
 ## Current limitations
 
-- Sign-in uses selectable sample users; there is no production identity provider, password, or user administration.
+**Product**
+
+- There are no notifications to claimants or reviewers, reporting, exports, or integrations with payroll or accounting systems.
+- There is no user administration in the application. In AWS, an administrator creates Cognito users and their roles and manager assignments are DynamoDB profile items; locally they are defined in code (`services/api/src/adapters/local/seed.ts`).
+
+**Local demo mode**
+
+- Sign-in uses selectable sample users with no passwords, so it must never hold real data.
 - Persistence is a single JSON file and a local receipt directory, intended for one API process.
-- Users and manager assignments are defined in code (`services/api/src/adapters/local/seed.ts`).
-- There are no notifications, reporting, exports, or integrations with payroll or accounting systems.
 
-## Deployment considerations
+**AWS deployment**
 
-ClaimFlow's AWS infrastructure is being built incrementally, following [the AWS architecture](docs/aws-architecture.md):
+- It uses the default CloudFront domain, with no custom domain or WAF.
+- The browser verification (below) covers a limited set of flows. The receipt janitor and the scheduled outbox sweeper have not been separately verified against the deployed environment.
+- Deployments are manual and never run automatically.
 
-- **Infrastructure:** a TypeScript AWS CDK application in `infrastructure/` defines the `ClaimFlow` DynamoDB table, the `ClaimFlow` Cognito User Pool, and a private S3 receipt bucket, all deployed in `ap-southeast-1`. It also defines web hosting for the React application, a separate private S3 bucket behind CloudFront, which is deployed but holds no built files yet, so the application is not available through CloudFront.
-- **Application runtime:** the application still runs only locally, using development sign-in and the local adapters described above. It is not connected to the User Pool or the receipt bucket, and receipts are still stored locally.
-- **Cognito sign-in:** the stack also defines the `ClaimFlowWeb` app client and a Cognito domain for the classic hosted UI, both deployed in `ap-southeast-1`. The web application has no Cognito integration yet and still uses development sign-in locally.
-- **Cleanup events:** the stack also defines the `claimflow` EventBridge bus, the cleanup queue and its dead-letter queue, and the rule routing the two internal cleanup events to the queue. They are deployed in `ap-southeast-1`, as are the cleanup worker Lambda function and its SQS event-source mapping. Nothing currently produces outbox events, so the cleanup path stays idle until the AWS application runtime exists.
-- **Outbox publisher:** the stack also defines the outbox publisher Lambda function, its execution role, log group, failure queue, and DynamoDB stream event-source mapping. They are deployed in `ap-southeast-1`. The sweeper is deployed as well (see below). The AWS application runtime is not implemented, so the publisher and sweeper currently have no application-created outbox events to process.
-- **Receipt janitor:** the stack also defines the receipt janitor Lambda function, its execution role, log group, failure queue, and DynamoDB stream event-source mapping. They are deployed in `ap-southeast-1`, so the table stream now has two consumers: the outbox publisher and the receipt janitor. The scheduled outbox sweeper is deployed as well. The AWS application runtime does not exist yet, so nothing creates pending receipt records and the janitor stays idle.
-- **Outbox sweeper:** the stack also defines the outbox sweeper Lambda function, its execution role and log group, an EventBridge schedule that invokes it every 15 minutes. The Lambda invocation permission for the rule is deployed with them, all in `ap-southeast-1`. The enabled schedule runs every 15 minutes and queries `GSI4` even while no outbox events exist. The AWS application runtime is not implemented, so the publisher and sweeper currently have no application-created outbox events to process.
-- **Receipt bucket CORS:** the receipt bucket has one CORS rule allowing `POST` from the CloudFront HTTPS origin only, with allowed headers `*`, no exposed headers, and no max age. It is deployed in `ap-southeast-1`, and it permits browser presigned POST uploads without granting any S3 authorization. The AWS application runtime and the browser upload flow are not implemented yet, so nothing uploads receipts to the bucket.
-- **Implemented and fake-tested, not wired or deployed:** the application's DynamoDB and S3 adapters and the AWS application services built on them are implemented in `services/api` and covered by tests that use fake AWS dependencies only. They include the claim, category, and receipt readers and writers, the idempotency orchestration, the claim creation, editing, lifecycle, receipt, and deletion services, the receipt upload-target and download flows, and opt-in request-pipeline seams for them. None of this runs against AWS: the production composition does not register any of it, no API Gateway, API Lambda, or Cognito integration exists, and the local runtime is unchanged. See [the AWS architecture](docs/aws-architecture.md) for the detail.
-- **Still to build:** the production composition and the AWS API runtime (the API Gateway HTTP API and its Lambda function), the web application's Cognito integration, publishing the built web application, the upload-target route and browser upload flow, the CloudWatch metric and alarm wiring, and the remaining approved components. Nothing above has been exercised against a deployed environment.
-- **Deployments:** AWS deployments are run manually and never automatically.
+## AWS deployment
 
-Running the application on AWS requires replacing development sign-in with Cognito and the local adapters with AWS adapters backed by durable storage that supports concurrent API instances. The application services already depend only on the port interfaces listed above, so new adapters can be added without changing the domain rules or the API contract.
+The AWS deployment is a serverless stack in `ap-southeast-1`, defined as code in `infrastructure/` (AWS CDK) and deployed manually. [The AWS architecture](docs/aws-architecture.md) has the design, and [the infrastructure README](infrastructure/README.md) has the resources, settings, outputs, and publishing steps.
+
+- **Web and API:** the React app is served from a private S3 bucket through CloudFront. It calls an API Gateway HTTP API that invokes the API Lambda function.
+- **Authentication:** users sign in on the Cognito hosted UI with the authorization code flow and PKCE. The browser sends the access token, and a JWT authorizer on every route except the health check requires the `openid` scope. Roles and manager assignments come from DynamoDB profiles, never from token claims.
+- **Data:** a single DynamoDB table holds claims, history, categories, receipt metadata, outbox events, and idempotency records, written with transactions and optimistic concurrency.
+- **Receipts:** the browser uploads directly to S3 with a presigned POST form after the API validates a declaration, then attaches the receipt; downloads use a short-lived presigned URL. Uploaded objects are inspected server-side with SHA-256 checksums.
+- **Asynchronous work:** changes write outbox events that a stream-triggered publisher sends to EventBridge. A cleanup worker (through SQS, with a dead-letter queue) deletes replaced or removed receipt objects and purges the history of deleted drafts. A receipt janitor and a scheduled sweeper handle abandoned uploads and unpublished events.
+- **Operations:** 17 CloudWatch alarms (API 5xx rate, Lambda errors and throttles, stream iterator age, failure-queue depth, and the age of the oldest pending outbox event, an Embedded Metric Format metric) email an SNS topic on `ALARM` only.
+- **Publishing:** `npm run release -w @claimflow/web -- --api-base-url <ApiBaseUrl> --hosted-ui-url <HostedUiBaseUrl> --client-id <WebClientId>` validates the values, builds the app, and writes `dist/config.json`. Uploading to S3 and invalidating CloudFront are manual steps ([publishing instructions](infrastructure/README.md#publishing-the-web-application)). The web app enables Cognito sign-in only when `/config.json` is present; on any host other than `localhost` and `127.0.0.1` a missing or invalid file shows a configuration error rather than the sample-user chooser.
+
+**Verified on 21 October 2026**, in a browser against the deployed environment: the runtime configuration loads; Cognito PKCE sign-in and the callback work; the protected session, claim list, and claim detail requests succeed; receipt upload, download, replacement, and removal work; and the replaced and removed receipts' S3 objects were deleted asynchronously, with all four ClaimFlow queues empty afterwards. That cleanup evidence supports the publisher → EventBridge → cleanup-worker path only. The alarm email subscription was confirmed, and a manual `claimflow-api-errors` ALARM transition delivered an email. This was a manual check of those flows only, not an automated test; the dated evidence and its limits are in [the testing guide](docs/testing.md#manual-aws-browser-verification) and [the AWS architecture](docs/aws-architecture.md#verified-deployed-state).
+
+The AWS adapters and services are also covered by automated tests that use fake AWS dependencies; those tests do not exercise real AWS.
 
 ## Documentation
 
 - [Domain model](docs/domain-model.md)
 - [API guide](docs/api.md) and [OpenAPI specification](docs/openapi.yaml)
 - [Local development](docs/local-development.md)
+- [AWS architecture](docs/aws-architecture.md) and [infrastructure README](infrastructure/README.md)
 - [Testing](docs/testing.md)
+- [Portfolio readiness record](docs/engineering-readiness.md) and [security policy](SECURITY.md)
+- [Collaboration playbook](docs/collaboration-playbook.md): the project's scoped AI-assisted development and review process
+- [Third-party notices](THIRD_PARTY_NOTICES.txt)
+
+## License
+
+ClaimFlow is released under the [MIT License](LICENSE). The copyright and license notices of the third-party packages included in the distributed web and Lambda bundles are in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt); a copy is added to every web build (`dist/THIRD_PARTY_NOTICES.txt`) and to every bundled Lambda asset. The deployed web files carry it only after they are republished, which is a manual step.

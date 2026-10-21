@@ -35,7 +35,7 @@ An `UploadedReceipt` is what the server measured when the file arrived, plus its
 
 ### Claim history entry
 
-Immutable: `claimId`, `version` (the claim version it produced), `action`, `fromStatus`, `toStatus`, `actorId`, `occurredAt`, and an optional `comment`. Actions are `CREATE`, `UPDATE`, `ATTACH_RECEIPT`, `REPLACE_RECEIPT`, `REMOVE_RECEIPT`, and the six lifecycle actions. Every accepted claim mutation produces exactly one entry, stored together with the claim. The only way history is removed is when an owner deletes a draft that was never submitted, which removes the draft and its history together.
+Entries are never edited. Each records `claimId`, `version` (the claim version it produced), `action`, `fromStatus`, `toStatus`, `actorId`, `occurredAt`, and an optional `comment`. Actions are `CREATE`, `UPDATE`, `ATTACH_RECEIPT`, `REPLACE_RECEIPT`, `REMOVE_RECEIPT`, and the six lifecycle actions. Every accepted claim mutation produces exactly one entry, stored together with the claim. The only way history is removed is when an owner deletes a draft that was never submitted, which removes the draft and its history together.
 
 ### Actor
 

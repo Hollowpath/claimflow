@@ -96,6 +96,36 @@ export interface UploadedReceiptDto {
   readonly uploadedAt: string;
 }
 
+/**
+ * The JSON declaration of the presigned-upload flow (`POST /receipts` on the
+ * AWS path). The server validates every field; none identifies the owner.
+ */
+export interface ReceiptUploadDeclaration {
+  readonly fileName: string;
+  readonly contentType: string;
+  readonly sizeBytes: number;
+  readonly checksumSha256: string;
+}
+
+/** A presigned POST form: the target URL and the fields to send with the file. */
+export interface UploadFormDto {
+  readonly url: string;
+  readonly fields: Readonly<Record<string, string>>;
+}
+
+/** The `201` reply of the presigned-upload flow. */
+export interface ReceiptUploadTargetDto {
+  readonly receiptId: string;
+  readonly form: UploadFormDto;
+}
+
+/** The reply of `GET /claims/{claimId}/receipt` on the AWS path. */
+export interface ReceiptDownloadDto {
+  /** A short-lived presigned S3 URL; it is the credential, so never log it. */
+  readonly url: string;
+  readonly expiresAt: string;
+}
+
 export interface ClaimDto {
   readonly claimId: string;
   readonly employee: PersonRef;

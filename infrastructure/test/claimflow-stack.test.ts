@@ -1,16 +1,26 @@
 import { Match, Template } from 'aws-cdk-lib/assertions';
+import { build } from 'esbuild';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { App, type CfnElement } from 'aws-cdk-lib/core';
 import type { IConstruct } from 'constructs';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import {
+  CLAIMFLOW_ALARM_EMAIL_PARAMETER,
+  CLAIMFLOW_ALARM_TOPIC_NAME,
   CLAIMFLOW_CLEANUP_DLQ_NAME,
+  CLAIMFLOW_THIRD_PARTY_NOTICES_FILE,
   CLAIMFLOW_CLEANUP_EVENT_TYPES,
   CLAIMFLOW_CLEANUP_QUEUE_NAME,
   CLAIMFLOW_CLEANUP_WORKER_NAME,
   CLAIMFLOW_OUTBOX_FAILURE_QUEUE_NAME,
   CLAIMFLOW_JANITOR_FAILURE_QUEUE_NAME,
   CLAIMFLOW_OUTBOX_PUBLISHER_NAME,
+  CLAIMFLOW_API_FUNCTION_NAME,
+  CLAIMFLOW_API_PROTECTED_ROUTES,
+  CLAIMFLOW_API_PUBLIC_ROUTES,
+  CLAIMFLOW_API_REQUIRED_SCOPE,
   CLAIMFLOW_OUTBOX_SWEEPER_NAME,
   CLAIMFLOW_RECEIPT_JANITOR_NAME,
   CLAIMFLOW_EVENT_BUS_NAME,
@@ -19,6 +29,7 @@ import {
   CLAIMFLOW_STACK_DESCRIPTION,
   ClaimFlowStack,
 } from '../lib/claimflow-stack';
+import { createAwsRoutes } from '../../services/api/src/http/routes';
 
 const TABLE_TYPE = 'AWS::DynamoDB::GlobalTable';
 const USER_POOL_TYPE = 'AWS::Cognito::UserPool';
@@ -39,6 +50,7 @@ const IAM_POLICY_TYPE = 'AWS::IAM::Policy';
 const LOG_GROUP_TYPE = 'AWS::Logs::LogGroup';
 
 interface TableResource {
+  readonly Type?: string;
   readonly Properties: Record<string, any>;
   readonly DeletionPolicy?: string;
   readonly UpdateReplacePolicy?: string;
@@ -175,7 +187,21 @@ describe('ClaimFlowStack', () => {
           ROLE_TYPE,
           IAM_POLICY_TYPE,
           LOG_GROUP_TYPE,
+          FUNCTION_TYPE,
+          ROLE_TYPE,
+          IAM_POLICY_TYPE,
+          LOG_GROUP_TYPE,
           'AWS::Lambda::Permission',
+          'AWS::ApiGatewayV2::Api',
+          'AWS::ApiGatewayV2::Integration',
+          'AWS::ApiGatewayV2::Authorizer',
+          'AWS::ApiGatewayV2::Stage',
+          ...Array.from({ length: 24 }, () => 'AWS::ApiGatewayV2::Route'),
+          ...Array.from({ length: 24 }, () => 'AWS::Lambda::Permission'),
+          ...Array.from({ length: 17 }, () => 'AWS::CloudWatch::Alarm'),
+          'AWS::SNS::Topic',
+          'AWS::SNS::TopicPolicy',
+          'AWS::SNS::Subscription',
         ].sort(),
       );
       template.resourceCountIs('AWS::KMS::Key', 0);
@@ -189,11 +215,9 @@ describe('ClaimFlowStack', () => {
       'AWS::Cognito::UserPoolResourceServer',
       'AWS::Cognito::UserPoolUICustomizationAttachment',
       'AWS::Cognito::ManagedLoginBranding',
-      'AWS::ApiGatewayV2::Api',
       'AWS::ApiGateway::RestApi',
       'AWS::SES::EmailIdentity',
       'AWS::IAM::User',
-      'AWS::SNS::Topic',
       'AWS::Lambda::LayerVersion',
       'AWS::IAM::ManagedPolicy',
       'AWS::Events::Archive',
@@ -201,7 +225,6 @@ describe('ClaimFlowStack', () => {
       'AWS::Events::ApiDestination',
       'AWS::Pipes::Pipe',
       'AWS::Scheduler::Schedule',
-      'AWS::CloudWatch::Alarm',
       'Custom::S3AutoDeleteObjects',
       'Custom::CDKBucketDeployment',
       'AWS::CloudFront::CloudFrontOriginAccessIdentity',
@@ -906,10 +929,10 @@ describe('ClaimFlowStack', () => {
       template.toJSON().Resources[functionLogicalId].Properties;
 
     it('defines a role, policy, log group and mapping per function', () => {
-      template.resourceCountIs(FUNCTION_TYPE, 4);
-      template.resourceCountIs(ROLE_TYPE, 4);
-      template.resourceCountIs(IAM_POLICY_TYPE, 4);
-      template.resourceCountIs(LOG_GROUP_TYPE, 4);
+      template.resourceCountIs(FUNCTION_TYPE, 5);
+      template.resourceCountIs(ROLE_TYPE, 5);
+      template.resourceCountIs(IAM_POLICY_TYPE, 5);
+      template.resourceCountIs(LOG_GROUP_TYPE, 5);
       template.resourceCountIs(MAPPING_TYPE, 3);
     });
 
@@ -1639,7 +1662,7 @@ describe('ClaimFlowStack', () => {
     });
 
     it('lets only the schedule invoke the sweeper', () => {
-      template.resourceCountIs('AWS::Lambda::Permission', 1);
+      template.resourceCountIs('AWS::Lambda::Permission', 1 + 24);
       template.hasResourceProperties('AWS::Lambda::Permission', {
         Action: 'lambda:InvokeFunction',
         FunctionName: arnOf(functionLogicalId),
@@ -1654,6 +1677,403 @@ describe('ClaimFlowStack', () => {
         (found) => (found as TableResource).Properties.FunctionName,
       );
       expect(functions).not.toContainEqual({ Ref: functionLogicalId });
+    });
+  });
+
+  describe('API function', () => {
+    let functionLogicalId: string;
+    let roleLogicalId: string;
+    let logGroupLogicalId: string;
+    let tableId: string;
+    let bucketId: string;
+
+    const arnOf = (logicalId: string) => ({ 'Fn::GetAtt': [logicalId, 'Arn'] });
+    const resources = () =>
+      template.toJSON().Resources as Record<string, TableResource>;
+    const objects = (pattern: string) => ({
+      'Fn::Join': ['', [arnOf(bucketId), pattern]],
+    });
+
+    const statements = (): Record<string, any>[] => {
+      const policies = Object.values(
+        template.findResources(IAM_POLICY_TYPE, {
+          Properties: { Roles: [{ Ref: roleLogicalId }] },
+        }),
+      ) as TableResource[];
+      expect(policies).toHaveLength(1);
+      return policies[0].Properties.PolicyDocument.Statement;
+    };
+
+    beforeAll(() => {
+      [functionLogicalId] = resourceOf(stack.apiFunction);
+      [logGroupLogicalId] = resourceOf(stack.apiFunctionLogGroup);
+      [tableId] = Object.keys(template.findResources(TABLE_TYPE));
+      bucketId = bucketLogicalId;
+      roleLogicalId =
+        resources()[functionLogicalId].Properties.Role['Fn::GetAtt'][0];
+    });
+
+    it('configures the function', () => {
+      expect(CLAIMFLOW_API_FUNCTION_NAME).toBe('claimflow-api');
+      template.hasResourceProperties(FUNCTION_TYPE, {
+        FunctionName: 'claimflow-api',
+        Runtime: 'nodejs24.x',
+        Architectures: ['arm64'],
+        MemorySize: 512,
+        Timeout: 29,
+        Handler: 'index.handler',
+        Role: arnOf(roleLogicalId),
+        LoggingConfig: { LogGroup: { Ref: logGroupLogicalId } },
+      });
+      const properties = resources()[functionLogicalId].Properties;
+      expect(properties).not.toHaveProperty('TracingConfig');
+      expect(properties).not.toHaveProperty('VpcConfig');
+      expect(properties).not.toHaveProperty('ReservedConcurrentExecutions');
+      expect(properties).not.toHaveProperty('DeadLetterConfig');
+      expect(properties).not.toHaveProperty('Layers');
+      expect(properties.Code).toHaveProperty('S3Key');
+    });
+
+    it('passes only the table and receipt bucket names', () => {
+      expect(resources()[functionLogicalId].Properties.Environment).toEqual({
+        Variables: {
+          CLAIMFLOW_TABLE_NAME: { Ref: tableId },
+          CLAIMFLOW_RECEIPT_BUCKET_NAME: { Ref: bucketId },
+        },
+      });
+    });
+
+    it('bundles the entry point into a zip asset with no layer', () => {
+      // CDK bundles the SDK and workspace sources at synth time.
+      const properties = resources()[functionLogicalId].Properties;
+      expect(properties.Code.S3Key).toMatch(/\.zip$/);
+      expect(properties).not.toHaveProperty('Layers');
+    });
+
+    it('has a dedicated log group with 30 day retention', () => {
+      template.hasResourceProperties(LOG_GROUP_TYPE, {
+        LogGroupName: '/aws/lambda/claimflow-api',
+        RetentionInDays: 30,
+      });
+    });
+
+    it('has its own role, assumed only by Lambda, with no managed policies', () => {
+      for (const other of [
+        stack.cleanupWorker,
+        stack.outboxPublisher,
+        stack.receiptJanitor,
+        stack.outboxSweeper,
+      ]) {
+        const otherRole =
+          resources()[resourceOf(other)[0]].Properties.Role['Fn::GetAtt'][0];
+        expect(roleLogicalId).not.toBe(otherRole);
+      }
+      const role = resources()[roleLogicalId].Properties;
+      expect(role.AssumeRolePolicyDocument.Statement).toEqual([
+        {
+          Action: 'sts:AssumeRole',
+          Effect: 'Allow',
+          Principal: { Service: 'lambda.amazonaws.com' },
+        },
+      ]);
+      expect(role).not.toHaveProperty('ManagedPolicyArns');
+    });
+
+    it('grants exactly the scoped permissions', () => {
+      expect(statements()).toEqual([
+        {
+          Effect: 'Allow',
+          Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+          Resource: arnOf(logGroupLogicalId),
+        },
+        {
+          Effect: 'Allow',
+          Action: [
+            'dynamodb:GetItem',
+            'dynamodb:BatchGetItem',
+            'dynamodb:Query',
+            'dynamodb:PutItem',
+            'dynamodb:UpdateItem',
+            'dynamodb:DeleteItem',
+            'dynamodb:ConditionCheckItem',
+          ],
+          Resource: arnOf(tableId),
+        },
+        {
+          Effect: 'Allow',
+          Action: 'dynamodb:Query',
+          Resource: ['GSI1', 'GSI2', 'GSI3', 'GSI4'].map((index) => ({
+            'Fn::Join': ['', [arnOf(tableId), `/index/${index}`]],
+          })),
+        },
+        {
+          Effect: 'Allow',
+          Action: ['s3:GetObject', 's3:PutObject'],
+          Resource: [objects('/receipts/*'), objects('/uploads/pending/*')],
+        },
+        {
+          Effect: 'Allow',
+          Action: 's3:DeleteObject',
+          Resource: objects('/uploads/pending/*'),
+        },
+        {
+          Effect: 'Allow',
+          Action: 's3:ListBucket',
+          Resource: arnOf(bucketId),
+        },
+      ]);
+    });
+
+    it('authorizes transactions through item actions, not a transaction action', () => {
+      const json = JSON.stringify(statements());
+      expect(json).not.toMatch(/dynamodb:Transact/);
+      for (const action of [
+        'PutItem',
+        'UpdateItem',
+        'DeleteItem',
+        'ConditionCheckItem',
+      ]) {
+        expect(json).toContain(`dynamodb:${action}`);
+      }
+    });
+
+    it('grants no stream, event bus, queue, Cognito, final-delete, or wildcard access', () => {
+      const json = JSON.stringify(statements());
+      expect(json).not.toMatch(/dynamodb:(Scan|\w*Stream|\w*Table|\*)/);
+      expect(json).not.toContain('StreamArn');
+      expect(json).not.toContain('events:');
+      expect(json).not.toContain('sqs:');
+      expect(json).not.toContain('cognito');
+      expect(json).not.toContain('s3:*');
+      expect(json).not.toContain('"*"');
+      const deletes = statements().filter((statement) =>
+        JSON.stringify(statement.Action).includes('s3:DeleteObject'),
+      );
+      expect(JSON.stringify(deletes)).not.toContain('/receipts/*');
+      for (const statement of statements()) {
+        expect(statement).not.toHaveProperty('NotAction');
+        expect(statement).not.toHaveProperty('NotResource');
+        expect(statement).not.toHaveProperty('Condition');
+      }
+    });
+
+    it('is invoked only by API Gateway, never by an event source', () => {
+      const principals = Object.values(resources())
+        .filter(
+          (resource) =>
+            resource.Type === 'AWS::Lambda::Permission' &&
+            JSON.stringify(resource.Properties.FunctionName).includes(
+              functionLogicalId,
+            ),
+        )
+        .map((resource) => resource.Properties.Principal);
+      expect(principals.length).toBeGreaterThan(0);
+      expect(new Set(principals)).toEqual(
+        new Set(['apigateway.amazonaws.com']),
+      );
+      const mappings = Object.values(template.findResources(MAPPING_TYPE)).map(
+        (found) => (found as TableResource).Properties.FunctionName,
+      );
+      expect(mappings).not.toContainEqual({ Ref: functionLogicalId });
+    });
+  });
+
+  describe('HTTP API', () => {
+    let apiLogicalId: string;
+    let authorizerLogicalId: string;
+    let functionLogicalId: string;
+    let integrationLogicalId: string;
+    let webClientId: string;
+
+    const resources = () =>
+      template.toJSON().Resources as Record<string, TableResource>;
+    const ofType = (type: string) =>
+      Object.values(template.findResources(type)) as TableResource[];
+    const routes = () => ofType('AWS::ApiGatewayV2::Route');
+    const routeKeys = () =>
+      routes()
+        .map((route) => route.Properties.RouteKey as string)
+        .sort();
+    const basePath = '/api/v1';
+
+    beforeAll(() => {
+      [apiLogicalId] = resourceOf(stack.httpApi);
+      [functionLogicalId] = resourceOf(stack.apiFunction);
+      authorizerLogicalId = Object.keys(
+        template.findResources('AWS::ApiGatewayV2::Authorizer'),
+      )[0];
+      integrationLogicalId = Object.keys(
+        template.findResources('AWS::ApiGatewayV2::Integration'),
+      )[0];
+      webClientId = webClientLogicalId;
+    });
+
+    it('is an HTTP API without a default catch-all stage or route', () => {
+      template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+        Name: 'claimflow-api',
+        ProtocolType: 'HTTP',
+      });
+      template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
+      for (const key of routeKeys()) {
+        expect(key).toMatch(/^(GET|POST|PUT|PATCH|DELETE) \/api\/v1\//);
+        expect(key).not.toMatch(/\$default|ANY|\{proxy\+\}|\*/);
+      }
+      expect(resources()[apiLogicalId].Properties).not.toHaveProperty(
+        'DisableExecuteApiEndpoint',
+      );
+    });
+
+    it('routes exactly the application routes, matching the route table', () => {
+      const expected = createAwsRoutes({} as never)
+        .map(
+          (route) =>
+            `${route.method} ${basePath}${route.path.replace(/:(\w+)/g, '{$1}')}`,
+        )
+        .sort();
+      expect(routeKeys()).toEqual(expected);
+      expect(routeKeys()).toHaveLength(
+        CLAIMFLOW_API_PUBLIC_ROUTES.length +
+          CLAIMFLOW_API_PROTECTED_ROUTES.length,
+      );
+    });
+
+    it('leaves only the health check public', () => {
+      const open = routes().filter(
+        (route) => route.Properties.AuthorizationType === 'NONE',
+      );
+      expect(open.map((route) => route.Properties.RouteKey)).toEqual([
+        `GET ${basePath}/health`,
+      ]);
+      expect(open[0].Properties).not.toHaveProperty('AuthorizerId');
+    });
+
+    it('protects every other route with the JWT authorizer and the openid scope', () => {
+      const protectedRoutes = routes().filter(
+        (route) => route.Properties.RouteKey !== `GET ${basePath}/health`,
+      );
+      expect(protectedRoutes).toHaveLength(
+        CLAIMFLOW_API_PROTECTED_ROUTES.length,
+      );
+      for (const route of protectedRoutes) {
+        expect(route.Properties).toMatchObject({
+          AuthorizationType: 'JWT',
+          AuthorizerId: { Ref: authorizerLogicalId },
+          AuthorizationScopes: ['openid'],
+        });
+      }
+      expect(CLAIMFLOW_API_REQUIRED_SCOPE).toBe('openid');
+    });
+
+    it('validates Cognito access tokens by issuer, app client, and header', () => {
+      template.resourceCountIs('AWS::ApiGatewayV2::Authorizer', 1);
+      template.hasResourceProperties('AWS::ApiGatewayV2::Authorizer', {
+        ApiId: { Ref: apiLogicalId },
+        AuthorizerType: 'JWT',
+        IdentitySource: ['$request.header.Authorization'],
+        JwtConfiguration: {
+          Issuer: { 'Fn::GetAtt': [userPoolLogicalId, 'ProviderURL'] },
+          Audience: [{ Ref: webClientId }],
+        },
+      });
+    });
+
+    it('uses one payload format 2.0 proxy integration with the API function', () => {
+      template.resourceCountIs('AWS::ApiGatewayV2::Integration', 1);
+      template.hasResourceProperties('AWS::ApiGatewayV2::Integration', {
+        ApiId: { Ref: apiLogicalId },
+        IntegrationType: 'AWS_PROXY',
+        IntegrationUri: { 'Fn::GetAtt': [functionLogicalId, 'Arn'] },
+        PayloadFormatVersion: '2.0',
+      });
+      for (const route of routes()) {
+        expect(JSON.stringify(route.Properties.Target)).toContain(
+          integrationLogicalId,
+        );
+      }
+    });
+
+    it('lets API Gateway invoke the function only for this API and one route each', () => {
+      const permissions = Object.values(resources())
+        .filter(
+          (resource) =>
+            resource.Type === 'AWS::Lambda::Permission' &&
+            resource.Properties.Principal === 'apigateway.amazonaws.com',
+        )
+        .map((resource) => resource.Properties);
+      expect(permissions).toHaveLength(routes().length);
+      const sources: string[] = [];
+      for (const permission of permissions) {
+        expect(permission.Action).toBe('lambda:InvokeFunction');
+        expect(permission.FunctionName).toEqual({
+          'Fn::GetAtt': [functionLogicalId, 'Arn'],
+        });
+        const source = JSON.stringify(permission.SourceArn);
+        expect(source).toContain(`{"Ref":"${apiLogicalId}"}`);
+        expect(source).toMatch(/\/\*\/\*\/api\/v1\//);
+        expect(source).not.toMatch(/\/\*\/\*\/\*"|\/\*"\]/);
+        sources.push(source);
+      }
+      // Routes that share a path (different methods) share a source ARN.
+      expect(new Set(sources).size).toBe(
+        new Set(routeKeys().map((key) => key.split(' ')[1])).size,
+      );
+    });
+
+    it('allows the CloudFront origin only, with the required methods and headers', () => {
+      const cors = resources()[apiLogicalId].Properties.CorsConfiguration;
+      expect(cors).toEqual({
+        AllowCredentials: false,
+        AllowHeaders: ['Authorization', 'Content-Type', 'Idempotency-Key'],
+        AllowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+        AllowOrigins: [
+          {
+            'Fn::Join': [
+              '',
+              [
+                'https://',
+                {
+                  'Fn::GetAtt': [distributionLogicalId, 'DomainName'],
+                },
+              ],
+            ],
+          },
+        ],
+        ExposeHeaders: ['X-Request-Id', 'X-Correlation-Id'],
+        MaxAge: 600,
+      });
+      expect(JSON.stringify(cors)).not.toContain('*');
+    });
+
+    it('bounds throttling on the default stage', () => {
+      template.resourceCountIs('AWS::ApiGatewayV2::Stage', 1);
+      template.hasResourceProperties('AWS::ApiGatewayV2::Stage', {
+        ApiId: { Ref: apiLogicalId },
+        StageName: '$default',
+        AutoDeploy: true,
+        DefaultRouteSettings: {
+          ThrottlingRateLimit: 20,
+          ThrottlingBurstLimit: 40,
+        },
+      });
+    });
+
+    it('outputs the endpoint, the base URL, and the API ID', () => {
+      const outputs = template.toJSON().Outputs as Record<string, any>;
+      expect(outputs.ApiEndpoint.Value).toEqual({
+        'Fn::GetAtt': [apiLogicalId, 'ApiEndpoint'],
+      });
+      expect(JSON.stringify(outputs.ApiBaseUrl.Value)).toContain('/api/v1');
+      expect(outputs.ApiId.Value).toEqual({ Ref: apiLogicalId });
+    });
+
+    it('adds no custom domain, VPC link, or WebSocket API', () => {
+      for (const type of [
+        'AWS::ApiGatewayV2::DomainName',
+        'AWS::ApiGatewayV2::VpcLink',
+        'AWS::ApiGateway::RestApi',
+      ]) {
+        template.resourceCountIs(type, 0);
+      }
     });
   });
 
@@ -1769,6 +2189,458 @@ describe('ClaimFlowStack', () => {
       template.resourceCountIs(
         'AWS::Cognito::UserPoolUICustomizationAttachment',
         0,
+      );
+    });
+  });
+
+  describe('CloudWatch alarms', () => {
+    it('alarms on the sweeper EMF metric, which needs no IAM permission', () => {
+      const properties = Object.values(
+        template.findResources('AWS::CloudWatch::Alarm', {
+          Properties: { AlarmName: 'claimflow-oldest-pending-outbox-age' },
+        }),
+      )[0].Properties as Record<string, unknown>;
+      expect(properties).toMatchObject({
+        Namespace: 'ClaimFlow',
+        MetricName: 'OldestPendingOutboxAge',
+        Statistic: 'Maximum',
+        Unit: 'Seconds',
+        Period: 900,
+        EvaluationPeriods: 2,
+        Threshold: 1800,
+        TreatMissingData: 'notBreaching',
+        ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      });
+      // A dimensionless metric, and no action of any kind.
+      expect(properties).not.toHaveProperty('Dimensions');
+      expect(properties.AlarmActions).toHaveLength(1);
+      // EMF is written to the log, so no role gains a CloudWatch permission.
+      expect(
+        JSON.stringify(template.findResources(IAM_POLICY_TYPE)),
+      ).not.toMatch(/cloudwatch:/i);
+    });
+
+    interface Alarm {
+      readonly Properties: Record<string, any>;
+    }
+    const alarms = () =>
+      Object.values(
+        template.findResources('AWS::CloudWatch::Alarm'),
+      ) as Alarm[];
+    const named = (name: string) => {
+      const found = alarms().filter(
+        (alarm) => alarm.Properties.AlarmName === name,
+      );
+      expect(found, name).toHaveLength(1);
+      return found[0].Properties;
+    };
+    const logicalId = (construct: IConstruct) => resourceOf(construct)[0];
+
+    const lambdaFunctions = (): [string, string][] => [
+      [CLAIMFLOW_API_FUNCTION_NAME, logicalId(stack.apiFunction)],
+      [CLAIMFLOW_CLEANUP_WORKER_NAME, logicalId(stack.cleanupWorker)],
+      [CLAIMFLOW_OUTBOX_PUBLISHER_NAME, logicalId(stack.outboxPublisher)],
+      [CLAIMFLOW_RECEIPT_JANITOR_NAME, logicalId(stack.receiptJanitor)],
+      [CLAIMFLOW_OUTBOX_SWEEPER_NAME, logicalId(stack.outboxSweeper)],
+    ];
+
+    it('defines exactly the approved alarms', () => {
+      const lambdaNames = lambdaFunctions().flatMap(([name]) => {
+        const short = name.replace(/^claimflow-/, '');
+        return [`claimflow-${short}-errors`, `claimflow-${short}-throttles`];
+      });
+      expect(
+        alarms()
+          .map((alarm) => alarm.Properties.AlarmName)
+          .sort(),
+      ).toEqual(
+        [
+          'claimflow-api-5xx-rate',
+          'claimflow-oldest-pending-outbox-age',
+          ...lambdaNames,
+          'claimflow-outbox-publisher-iterator-age',
+          'claimflow-receipt-janitor-iterator-age',
+          'claimflow-cleanup-dlq-visible-messages',
+          'claimflow-outbox-publisher-failures-visible-messages',
+          'claimflow-receipt-janitor-failures-visible-messages',
+        ].sort(),
+      );
+      expect(Object.keys(stack.alarms).sort()).toEqual(
+        alarms()
+          .map((alarm) => alarm.Properties.AlarmName)
+          .sort(),
+      );
+    });
+
+    it('treats missing data as not breaching and compares with >=', () => {
+      for (const { Properties } of alarms()) {
+        expect(Properties.TreatMissingData).toBe('notBreaching');
+        expect(Properties.ComparisonOperator).toBe(
+          'GreaterThanOrEqualToThreshold',
+        );
+      }
+    });
+
+    it('has no custom metric namespace besides ClaimFlow, and standard-resolution periods', () => {
+      const periods: number[] = [];
+      for (const { Properties } of alarms()) {
+        for (const key of ['OKActions', 'InsufficientDataActions']) {
+          expect(Properties, key).not.toHaveProperty(key);
+        }
+        expect(Properties).not.toHaveProperty('ExtendedStatistic');
+        expect(Properties).not.toHaveProperty(
+          'EvaluateLowSampleCountPercentile',
+        );
+        const metrics: any[] = Properties.Metrics ?? [Properties];
+        for (const metric of metrics) {
+          const stat = metric.MetricStat?.Metric ?? metric;
+          if (stat.Namespace !== undefined) {
+            expect([
+              'AWS/Lambda',
+              'AWS/SQS',
+              'AWS/ApiGateway',
+              'ClaimFlow',
+            ]).toContain(stat.Namespace);
+          }
+          const period = metric.MetricStat?.Period ?? metric.Period;
+          if (period !== undefined) {
+            periods.push(period);
+          }
+        }
+      }
+      expect(periods.length).toBeGreaterThan(0);
+      for (const period of periods) {
+        expect(period % 60, `period ${period}`).toBe(0);
+        expect(period).toBeGreaterThanOrEqual(60);
+      }
+      template.resourceCountIs('AWS::CloudWatch::Dashboard', 0);
+    });
+
+    it.each([
+      ['Errors', 'errors'],
+      ['Throttles', 'throttles'],
+    ])(
+      'alarms on %s of each of the five Lambda functions',
+      (metric, suffix) => {
+        expect(lambdaFunctions()).toHaveLength(5);
+        for (const [name, id] of lambdaFunctions()) {
+          const short = name.replace(/^claimflow-/, '');
+          expect(named(`claimflow-${short}-${suffix}`)).toMatchObject({
+            Namespace: 'AWS/Lambda',
+            MetricName: metric,
+            Dimensions: [{ Name: 'FunctionName', Value: { Ref: id } }],
+            Statistic: 'Sum',
+            Period: 900,
+            EvaluationPeriods: 1,
+            Threshold: 1,
+          });
+        }
+      },
+    );
+
+    it.each([
+      [CLAIMFLOW_OUTBOX_PUBLISHER_NAME, () => stack.outboxPublisher],
+      [CLAIMFLOW_RECEIPT_JANITOR_NAME, () => stack.receiptJanitor],
+    ])('alarms on the iterator age of %s', (name, fn) => {
+      expect(
+        named(`claimflow-${name.replace(/^claimflow-/, '')}-iterator-age`),
+      ).toMatchObject({
+        Namespace: 'AWS/Lambda',
+        MetricName: 'IteratorAge',
+        Dimensions: [{ Name: 'FunctionName', Value: { Ref: logicalId(fn()) } }],
+        Statistic: 'Maximum',
+        Unit: 'Milliseconds',
+        Period: 300,
+        EvaluationPeriods: 3,
+        Threshold: 15 * 60 * 1000,
+      });
+    });
+
+    it('has no iterator age alarm for functions without a stream', () => {
+      const names = alarms().map((alarm) => alarm.Properties.AlarmName);
+      expect(
+        names.filter((name) => name.includes('iterator-age')),
+      ).toHaveLength(2);
+    });
+
+    it.each([
+      [CLAIMFLOW_CLEANUP_DLQ_NAME, () => stack.cleanupDeadLetterQueue],
+      [CLAIMFLOW_OUTBOX_FAILURE_QUEUE_NAME, () => stack.outboxFailureQueue],
+      [CLAIMFLOW_JANITOR_FAILURE_QUEUE_NAME, () => stack.janitorFailureQueue],
+    ])('alarms on visible messages in %s', (name, queue) => {
+      expect(
+        named(`claimflow-${name.replace(/^claimflow-/, '')}-visible-messages`),
+      ).toMatchObject({
+        Namespace: 'AWS/SQS',
+        MetricName: 'ApproximateNumberOfMessagesVisible',
+        Dimensions: [
+          {
+            Name: 'QueueName',
+            Value: { 'Fn::GetAtt': [logicalId(queue()), 'QueueName'] },
+          },
+        ],
+        Statistic: 'Maximum',
+        Period: 300,
+        EvaluationPeriods: 1,
+        Threshold: 1,
+      });
+    });
+
+    it('alarms on the HTTP API 5xx rate, with no minimum request count', () => {
+      const [apiId] = resourceOf(stack.httpApi);
+      const properties = named('claimflow-api-5xx-rate');
+      expect(properties).toMatchObject({
+        Threshold: 5,
+        EvaluationPeriods: 3,
+        DatapointsToAlarm: 2,
+      });
+      const metrics = properties.Metrics as any[];
+      const expression = metrics.find((metric) => metric.Expression);
+      expect(expression.Expression).toBe(
+        'IF(requests > 0, 100 * FILL(errors, 0) / requests, 0)',
+      );
+      expect(expression.ReturnData).not.toBe(false);
+      const byId = Object.fromEntries(
+        metrics
+          .filter((metric) => metric.MetricStat)
+          .map((metric) => [metric.Id, metric]),
+      );
+      for (const [id, metricName] of [
+        ['errors', '5xx'],
+        ['requests', 'Count'],
+      ]) {
+        expect(byId[id].MetricStat).toMatchObject({
+          Metric: {
+            Namespace: 'AWS/ApiGateway',
+            MetricName: metricName,
+            Dimensions: [{ Name: 'ApiId', Value: { Ref: apiId } }],
+          },
+          Period: 300,
+          Stat: 'Sum',
+        });
+        expect(byId[id].ReturnData).toBe(false);
+      }
+    });
+  });
+
+  describe('alarm notifications', () => {
+    let topicId: string;
+    const alarmResources = () =>
+      Object.values(template.findResources('AWS::CloudWatch::Alarm')) as {
+        Properties: Record<string, any>;
+      }[];
+
+    beforeAll(() => {
+      [topicId] = resourceOf(stack.alarmTopic);
+    });
+
+    it('defines one standard topic named claimflow-alarms', () => {
+      template.resourceCountIs('AWS::SNS::Topic', 1);
+      expect(CLAIMFLOW_ALARM_TOPIC_NAME).toBe('claimflow-alarms');
+      template.hasResourceProperties('AWS::SNS::Topic', {
+        TopicName: 'claimflow-alarms',
+      });
+      const topic = template.findResources('AWS::SNS::Topic')[topicId]
+        .Properties as Record<string, unknown>;
+      // Standard, not FIFO, and no customer-managed key.
+      expect(topic).not.toHaveProperty('FifoTopic');
+      expect(topic).not.toHaveProperty('KmsMasterKeyId');
+      template.resourceCountIs('AWS::KMS::Key', 0);
+    });
+
+    it('takes the address from a required NoEcho parameter, never a literal or output', () => {
+      const parameter =
+        template.toJSON().Parameters[CLAIMFLOW_ALARM_EMAIL_PARAMETER];
+      expect(CLAIMFLOW_ALARM_EMAIL_PARAMETER).toBe('AlarmNotificationEmail');
+      expect(parameter).toMatchObject({ Type: 'String', NoEcho: true });
+      expect(parameter).not.toHaveProperty('Default');
+      expect(new RegExp(parameter.AllowedPattern).test('a@example.com')).toBe(
+        true,
+      );
+      expect(new RegExp(parameter.AllowedPattern).test('not an email')).toBe(
+        false,
+      );
+      // The only reference to the address anywhere is the subscription.
+      const json = JSON.stringify(template.toJSON());
+      expect(json.match(/AlarmNotificationEmail/g)).toHaveLength(
+        1 /* declaration */ + 1 /* subscription */,
+      );
+      expect(template.toJSON().Outputs).not.toHaveProperty(
+        'AlarmNotificationEmail',
+      );
+      expect(JSON.stringify(template.toJSON().Outputs)).not.toMatch(
+        /AlarmNotificationEmail|@/,
+      );
+      expect(json).not.toMatch(/[\w.+-]+@[\w-]+\.[\w.-]+/);
+    });
+
+    it('has exactly one email subscription to the topic using the parameter', () => {
+      template.resourceCountIs('AWS::SNS::Subscription', 1);
+      template.hasResourceProperties('AWS::SNS::Subscription', {
+        Protocol: 'email',
+        TopicArn: { Ref: topicId },
+        Endpoint: { Ref: CLAIMFLOW_ALARM_EMAIL_PARAMETER },
+      });
+    });
+
+    it("lets only this account's ClaimFlow alarms publish, and only over TLS", () => {
+      template.resourceCountIs('AWS::SNS::TopicPolicy', 1);
+      const [policy] = Object.values(
+        template.findResources('AWS::SNS::TopicPolicy'),
+      ) as { Properties: Record<string, any> }[];
+      expect(policy.Properties.Topics).toEqual([{ Ref: topicId }]);
+      const statements = policy.Properties.PolicyDocument.Statement as any[];
+      expect(statements).toHaveLength(2);
+
+      const deny = statements.find((s) => s.Effect === 'Deny');
+      expect(deny).toMatchObject({
+        Action: 'sns:Publish',
+        Principal: '*',
+        Resource: { Ref: topicId },
+        Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+      });
+
+      const allow = statements.find((s) => s.Effect === 'Allow');
+      expect(allow).toMatchObject({
+        Action: 'sns:Publish',
+        Principal: { Service: 'cloudwatch.amazonaws.com' },
+        Resource: { Ref: topicId },
+      });
+      expect(allow.Condition.StringEquals['aws:SourceAccount']).toBe(
+        stack.account,
+      );
+      const sourceArn = JSON.stringify(
+        allow.Condition.ArnLike['aws:SourceArn'],
+      );
+      expect(sourceArn).toContain(':cloudwatch:');
+      expect(sourceArn).toContain(CLAIMFLOW_REGION);
+      expect(sourceArn).toContain(stack.account);
+      expect(sourceArn).toContain(':alarm:claimflow-*');
+      // No wildcard action, principal, or resource on the allow statement.
+      expect(JSON.stringify(allow.Action)).not.toContain('*');
+      expect(JSON.stringify(allow.Principal)).not.toContain('*');
+      expect(JSON.stringify(allow.Resource)).not.toContain('*');
+    });
+
+    it('sends every one of the 17 alarms to the topic in ALARM only', () => {
+      expect(alarmResources()).toHaveLength(17);
+      expect(Object.keys(stack.alarms)).toHaveLength(17);
+      for (const { Properties } of alarmResources()) {
+        expect(Properties.AlarmActions, Properties.AlarmName).toEqual([
+          { Ref: topicId },
+        ]);
+      }
+    });
+
+    it('has no OK or insufficient-data actions on any alarm', () => {
+      for (const { Properties } of alarmResources()) {
+        expect(Properties).not.toHaveProperty('OKActions');
+        expect(Properties).not.toHaveProperty('InsufficientDataActions');
+      }
+    });
+
+    it('adds no other topic, subscription, dashboard, or notification target', () => {
+      template.resourceCountIs('AWS::CloudWatch::Dashboard', 0);
+      expect(JSON.stringify(template.toJSON().Outputs)).not.toContain(
+        'arn:aws:sns',
+      );
+    });
+  });
+
+  describe('third-party notices', () => {
+    const repoRoot = resolve(process.cwd(), '..');
+    const noticesPath = join(repoRoot, CLAIMFLOW_THIRD_PARTY_NOTICES_FILE);
+    const lambdaEntries = [
+      'api-lambda',
+      'cleanup-worker-lambda',
+      'outbox-publisher-lambda',
+      'outbox-sweeper-lambda',
+      'receipt-janitor-lambda',
+    ];
+
+    const functions = () =>
+      Object.values(template.findResources(FUNCTION_TYPE)) as TableResource[];
+
+    it('ships the notices file in the asset of every bundled Lambda function', () => {
+      const notices = readFileSync(noticesPath, 'utf8');
+      expect(notices).toContain('THIRD-PARTY NOTICES FOR CLAIMFLOW');
+      expect(functions()).toHaveLength(lambdaEntries.length);
+
+      const assembly = (stack.node.root as App).synth();
+      for (const fn of functions()) {
+        const key = fn.Properties.Code.S3Key as string;
+        expect(key).toMatch(/\.zip$/);
+        const assetDir = join(
+          assembly.directory,
+          `asset.${key.replace(/\.zip$/, '')}`,
+        );
+        expect(existsSync(join(assetDir, 'index.js')), assetDir).toBe(true);
+        expect(
+          readFileSync(
+            join(assetDir, CLAIMFLOW_THIRD_PARTY_NOTICES_FILE),
+            'utf8',
+          ),
+        ).toBe(notices);
+      }
+    });
+
+    it('lists every package that the Lambda bundles contain', async () => {
+      const notices = readFileSync(noticesPath, 'utf8');
+      const listed = new Set(
+        notices
+          .split('\n')
+          .map((line) => /^(\S+@\S+)\s+\S+\s+(lambda|web)/.exec(line)?.[1])
+          .filter((entry): entry is string => entry !== undefined),
+      );
+      const missing = new Set<string>();
+      for (const entry of lambdaEntries) {
+        const result = await build({
+          entryPoints: [
+            join(repoRoot, 'services/api/src/adapters/aws', `${entry}.ts`),
+          ],
+          bundle: true,
+          platform: 'node',
+          target: 'node24',
+          format: 'cjs',
+          conditions: ['source'],
+          metafile: true,
+          write: false,
+          logLevel: 'silent',
+        });
+        for (const input of Object.keys(result.metafile.inputs)) {
+          const normalized = input.split('\\').join('/');
+          const marker = 'node_modules/';
+          const index = normalized.lastIndexOf(marker);
+          if (index < 0) {
+            continue;
+          }
+          const parts = normalized.slice(index + marker.length).split('/');
+          const name = parts[0].startsWith('@')
+            ? `${parts[0]}/${parts[1]}`
+            : parts[0];
+          const manifest = JSON.parse(
+            readFileSync(
+              join(
+                resolve(process.cwd(), normalized.slice(0, index)),
+                marker,
+                name,
+                'package.json',
+              ),
+              'utf8',
+            ),
+          ) as { version: string };
+          if (!listed.has(`${name}@${manifest.version}`)) {
+            missing.add(`${name}@${manifest.version}`);
+          }
+        }
+      }
+      expect([...missing]).toEqual([]);
+    });
+
+    it('adds no resource, permission, or runtime behavior for the notices', () => {
+      // The hook copies a file while bundling; the template has no trace of it.
+      expect(JSON.stringify(template.toJSON())).not.toContain(
+        CLAIMFLOW_THIRD_PARTY_NOTICES_FILE,
       );
     });
   });

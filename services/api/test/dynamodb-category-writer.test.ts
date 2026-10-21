@@ -470,3 +470,47 @@ describe('through the real executor', () => {
     expect(executor.inputs).toHaveLength(1);
   });
 });
+
+describe('prepare methods', () => {
+  it('build exactly the transactions the sending methods send, without sending', async () => {
+    const { executor, writer } = setup();
+    const create: CommitOptions = {
+      events: [createdEvent],
+      idempotency: completed,
+    };
+    const update: CommitOptions = {
+      events: updateEvents,
+      idempotency: completed,
+    };
+    const remove: CommitOptions = {
+      events: [deletedEvent],
+      idempotency: completed,
+    };
+
+    const prepared = [
+      writer.prepareCreate(created, create),
+      writer.prepareUpdate(policyChanged, 1, update),
+      writer.prepareDelete('travel', 1, remove),
+    ];
+    expect(executor.inputs).toHaveLength(0);
+
+    await writer.create(created, create);
+    await writer.update(policyChanged, 1, update);
+    await writer.delete('travel', 1, remove);
+    expect(executor.inputs).toEqual(prepared);
+  });
+
+  it('validate synchronously, like the sending methods', () => {
+    const { writer } = setup();
+    expect(() => writer.prepareCreate(created, { events: [] })).toThrow(
+      'requires an idempotency record',
+    );
+    expect(() =>
+      writer.prepareDelete('travel', 1, {
+        events: [],
+        idempotency: completed,
+        categoryGuard: {} as never,
+      }),
+    ).toThrow('category guard');
+  });
+});

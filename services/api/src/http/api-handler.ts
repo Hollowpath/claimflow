@@ -99,6 +99,22 @@ export interface ReadOperationRequest {
 /** A read that replies like the route handler it replaces. */
 export type ReadOperation = (request: ReadOperationRequest) => Promise<Reply>;
 
+/**
+ * What the pipeline needs of the application. The local runtime passes its
+ * `Application`; the AWS runtime has no local idempotency, so every
+ * idempotent route there must have a registered mutation.
+ */
+export type ApiHandlerApplication = Pick<Application, 'logger'> &
+  Partial<Pick<Application, 'idempotency'>>;
+
+/** An operation reached the pipeline without an AWS registration. */
+export class OperationNotRegisteredError extends Error {
+  public constructor() {
+    super('The operation is not registered.');
+    this.name = 'OperationNotRegisteredError';
+  }
+}
+
 export interface ApiHandlerOptions {
   readonly routes: readonly Route[];
   readonly authenticate: AuthenticationResolver;
@@ -108,6 +124,14 @@ export interface ApiHandlerOptions {
    * idempotency; there is no fallback from an entry to the local path.
    */
   readonly mutations?: Readonly<Record<string, IdempotentMutation>>;
+  /**
+   * Body parsing chosen explicitly per operation, for an operation whose
+   * registered mutation expects JSON where its route reads raw bytes (the AWS
+   * `receipt.upload`). Each entry requires a registered mutation, and nothing
+   * is ever inferred from the content type; without an entry the route's own
+   * body mode applies.
+   */
+  readonly bodyModes?: Readonly<Record<string, 'json'>>;
   /**
    * Opt-in reads by route operation (for example `claim.get`), for routes
    * that are not idempotent. A registered read replaces the route handler and
@@ -130,15 +154,25 @@ interface CompiledRoute {
  * correlation IDs, response headers, and request logging.
  */
 export function createApiHandler(
-  app: Pick<Application, 'idempotency' | 'logger'>,
+  app: ApiHandlerApplication,
   options: ApiHandlerOptions,
 ): ApiHandler {
   const routes = options.routes.map(compile);
+  for (const operation of Object.keys(options.bodyModes ?? {})) {
+    if (
+      options.mutations?.[operation] === undefined ||
+      !options.routes.some((route) => route.operation === operation)
+    ) {
+      throw new TypeError(
+        'A body mode needs a registered mutation for a known route.',
+      );
+    }
+  }
   return (request) => handle(app, routes, options, request);
 }
 
 async function handle(
-  app: Pick<Application, 'idempotency' | 'logger'>,
+  app: ApiHandlerApplication,
   routes: readonly CompiledRoute[],
   options: ApiHandlerOptions,
   request: ApiRequest,
@@ -174,12 +208,13 @@ async function handle(
       throw new UnauthenticatedError();
     }
 
-    const raw = await readBody(request, route);
+    const bodyMode = options.bodyModes?.[route.operation] ?? route.body;
+    const raw = await readBody(request, bodyMode);
     const context: RouteContext = {
       actor,
       params,
       query: request.query,
-      body: route.body === 'json' ? parseJson(raw, request) : undefined,
+      body: bodyMode === 'json' ? parseJson(raw, request) : undefined,
       raw,
       header: (name) => headerValue(request, name),
     };
@@ -221,6 +256,11 @@ async function handle(
         });
         reply = { status: stored.status, body: stored.body };
       } else {
+        // The AWS runtime has no local idempotency: an idempotent route
+        // without a registered mutation fails closed.
+        if (app.idempotency === undefined) {
+          throw new OperationNotRegisteredError();
+        }
         const result = await app.idempotency.run(
           actor.userId,
           key.data,
@@ -334,16 +374,16 @@ function headerValue(request: ApiRequest, name: string): string | undefined {
 
 async function readBody(
   request: ApiRequest,
-  route: Route,
+  mode: Route['body'],
 ): Promise<Uint8Array> {
-  if (route.body === 'none') {
+  if (mode === 'none') {
     return new Uint8Array();
   }
-  const limit = route.body === 'raw' ? maxReceiptSizeBytes : maxJsonBytes;
+  const limit = mode === 'raw' ? maxReceiptSizeBytes : maxJsonBytes;
   const body = await request.readBody(limit);
   if (body === undefined) {
     throw new PayloadTooLargeError(
-      route.body === 'raw'
+      mode === 'raw'
         ? 'Receipts must be 10 MB or smaller.'
         : 'The request body is too large.',
     );

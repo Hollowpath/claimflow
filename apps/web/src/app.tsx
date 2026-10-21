@@ -1,5 +1,5 @@
 import type { Role } from '@claimflow/contracts';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link, Navigate, Route, Routes } from 'react-router';
 
 import { Layout } from './components/layout';
@@ -33,9 +33,9 @@ export function App() {
 }
 
 function SignedInRoutes() {
-  const { user } = useSession();
+  const { user, authMode } = useSession();
   if (user === null) {
-    return <ChooseUser />;
+    return authMode === 'cognito' ? <SignIn /> : <ChooseUser />;
   }
 
   // Keyed by user so switching users remounts every page and drops their data.
@@ -108,6 +108,38 @@ function RequireRole({
     <EmptyState title={`This page is for the ${roleLabels[role]} role.`}>
       <Link to="/">Go to your start page</Link>
     </EmptyState>
+  );
+}
+
+function SignIn() {
+  const { authError, signIn } = useSession();
+  const [error, setError] = useState<string | null>(null);
+
+  async function start() {
+    setError(null);
+    try {
+      await signIn();
+    } catch {
+      setError('Sign-in could not be started. Please try again.');
+    }
+  }
+
+  const message = error ?? authError;
+  return (
+    <section className="choose-user">
+      <h1>Sign in to ClaimFlow</h1>
+      <p className="muted">
+        You sign in on the secure ClaimFlow sign-in page and come back here.
+      </p>
+      {message !== null && (
+        <p role="alert" className="notice notice-error">
+          {message}
+        </p>
+      )}
+      <button type="button" className="user-card" onClick={() => void start()}>
+        <strong>Sign in</strong>
+      </button>
+    </section>
   );
 }
 

@@ -10,7 +10,7 @@
     "moduleResolution": "Bundler",
     "noEmit": true,
     "rootDir": ".",
-    "types": ["vite/client"]
+    "types": ["vite/client", "node"]
   },
-  "include": ["src/**/*", "test/**/*", "vite.config.ts"]
+  "include": ["src/**/*", "scripts/**/*", "test/**/*", "vite.config.ts"]
 }

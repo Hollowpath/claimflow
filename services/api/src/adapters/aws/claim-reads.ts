@@ -4,6 +4,8 @@ import {
   idSchema,
 } from '@claimflow/contracts';
 
+import { listCategories } from '../../application/category-service.js';
+import type { CategoryRepository } from '../../application/ports.js';
 import type { ClaimQueryService } from '../../application/claim-query-service.js';
 import { NotFoundError } from '../../application/errors.js';
 import type {
@@ -88,5 +90,18 @@ export function receiptDownloadRead(
     status: 200,
     body: await service.download(request.actor, claimIdOf(request)),
     headers: { 'Cache-Control': 'no-store' },
+  });
+}
+
+/**
+ * `category.list`: every category by name, `{ items }`, through the local
+ * list's own sorting and presentation, over the AWS category reader.
+ */
+export function categoryListRead(
+  categories: Pick<CategoryRepository, 'list'>,
+): ReadOperation {
+  return async () => ({
+    status: 200,
+    body: { items: await listCategories(categories) },
   });
 }

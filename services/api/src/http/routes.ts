@@ -146,7 +146,7 @@ export function createLocalRoutes(
  * way to select or clear a user, and `GET /session` describes only the
  * signed-in user, never the other users.
  */
-export function createAwsRoutes(app: Application): Route[] {
+export function createAwsRoutes(app: AwsRouteServices): Route[] {
   return [
     health,
     {
@@ -163,8 +163,16 @@ export function createAwsRoutes(app: Application): Route[] {
   ];
 }
 
+/** What the AWS routes need: sessions and the (unregistered-path) services. */
+export type AwsRouteServices = Pick<
+  Application,
+  'claims' | 'receipts' | 'categories' | 'sessions'
+>;
+
 /** Every route other than health and sessions; the same in both runtimes. */
-function applicationRoutes(app: Application): Route[] {
+function applicationRoutes(
+  app: Pick<Application, 'claims' | 'receipts' | 'categories'>,
+): Route[] {
   const claimId = (context: RouteContext) => idParam(context, 'claimId');
 
   const actionRoutes = (

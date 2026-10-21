@@ -7,6 +7,7 @@ import { DynamoDbOutboxState } from './dynamodb-outbox-state.js';
 import { DynamoDbPendingOutbox } from './dynamodb-pending-outbox.js';
 import { EventBridgePublisher } from './eventbridge-publisher.js';
 import { OutboxPublication } from './outbox-publication.js';
+import { createEmfOldestPendingOutboxAgeRecorder } from './oldest-pending-outbox-metric.js';
 import { createOutboxSweeper } from './outbox-sweeper.js';
 
 /**
@@ -39,4 +40,5 @@ export const handler = createOutboxSweeper({
     clock: systemClock,
   }),
   clock: systemClock,
+  metrics: createEmfOldestPendingOutboxAgeRecorder(),
 });
