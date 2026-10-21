@@ -18,9 +18,9 @@ Included packages (39)
 ----------------------
 
 @aws-sdk/checksums@3.1001.3                          Apache-2.0   lambda
-@aws-sdk/client-dynamodb@3.1146.0                    Apache-2.0   lambda
-@aws-sdk/client-eventbridge@3.1146.0                 Apache-2.0   lambda
-@aws-sdk/client-s3@3.1146.0                          Apache-2.0   lambda
+@aws-sdk/client-dynamodb@3.1152.0                    Apache-2.0   lambda
+@aws-sdk/client-eventbridge@3.1152.0                 Apache-2.0   lambda
+@aws-sdk/client-s3@3.1152.0                          Apache-2.0   lambda
 @aws-sdk/core@3.978.3                                Apache-2.0   lambda
 @aws-sdk/credential-provider-env@3.972.74            Apache-2.0   lambda
 @aws-sdk/credential-provider-http@3.972.76           Apache-2.0   lambda
@@ -32,12 +32,12 @@ Included packages (39)
 @aws-sdk/credential-provider-web-identity@3.972.80   Apache-2.0   lambda
 @aws-sdk/dynamodb-codec@3.973.48                     Apache-2.0   lambda
 @aws-sdk/endpoint-cache@3.972.11                     Apache-2.0   lambda
-@aws-sdk/lib-dynamodb@3.1146.0                       Apache-2.0   lambda
+@aws-sdk/lib-dynamodb@3.1152.0                       Apache-2.0   lambda
 @aws-sdk/middleware-endpoint-discovery@3.972.32      Apache-2.0   lambda
 @aws-sdk/middleware-sdk-s3@3.972.79                  Apache-2.0   lambda
 @aws-sdk/nested-clients@3.997.48                     Apache-2.0   lambda
-@aws-sdk/s3-presigned-post@3.1146.0                  Apache-2.0   lambda
-@aws-sdk/s3-request-presigner@3.1146.0               Apache-2.0   lambda
+@aws-sdk/s3-presigned-post@3.1152.0                  Apache-2.0   lambda
+@aws-sdk/s3-request-presigner@3.1152.0               Apache-2.0   lambda
 @aws-sdk/signature-v4-multi-region@3.996.48          Apache-2.0   lambda
 @aws-sdk/token-providers@3.1150.0                    Apache-2.0   lambda
 @aws-sdk/util-dynamodb@3.996.9                       Apache-2.0   lambda
@@ -51,11 +51,11 @@ Included packages (39)
 bowser@2.14.1                                        MIT          lambda
 mnemonist@0.38.3                                     MIT          lambda
 obliterator@1.6.1                                    MIT          lambda
-react@19.3.0                                         MIT          web
-react-dom@19.3.0                                     MIT          web
+react@19.3.1                                         MIT          web
+react-dom@19.3.1                                     MIT          web
 react-router@8.4.0                                   MIT          web
 scheduler@0.28.0                                     MIT          web
-zod@4.6.6                                            MIT          lambda, web
+zod@4.6.7                                            MIT          lambda, web
 
 The following packages declare the license shown above in their package.json but
 ship no separate license file. They are published by the same project as the
@@ -74,8 +74,8 @@ License and notice texts
     @aws-sdk/credential-provider-sso@3.973.18
     @aws-sdk/credential-provider-web-identity@3.972.80
     @aws-sdk/middleware-sdk-s3@3.972.79
-    @aws-sdk/s3-presigned-post@3.1146.0
-    @aws-sdk/s3-request-presigner@3.1146.0
+    @aws-sdk/s3-presigned-post@3.1152.0
+    @aws-sdk/s3-request-presigner@3.1152.0
     @aws-sdk/signature-v4-multi-region@3.996.48
     @smithy/core@3.36.0
     @smithy/types@4.19.0
@@ -285,14 +285,14 @@ Apache License
 ________________________________________________________________________________
 
 [2] License (Apache-2.0) applying to:
-    @aws-sdk/client-dynamodb@3.1146.0
-    @aws-sdk/client-eventbridge@3.1146.0
-    @aws-sdk/client-s3@3.1146.0
+    @aws-sdk/client-dynamodb@3.1152.0
+    @aws-sdk/client-eventbridge@3.1152.0
+    @aws-sdk/client-s3@3.1152.0
     @aws-sdk/credential-provider-env@3.972.74
     @aws-sdk/credential-provider-ini@3.973.19
     @aws-sdk/credential-provider-node@3.972.86
     @aws-sdk/dynamodb-codec@3.973.48
-    @aws-sdk/lib-dynamodb@3.1146.0
+    @aws-sdk/lib-dynamodb@3.1152.0
     @aws-sdk/middleware-endpoint-discovery@3.972.32
     @aws-sdk/token-providers@3.1150.0
     @aws-sdk/util-dynamodb@3.996.9
@@ -1199,8 +1199,8 @@ THE SOFTWARE.
 ________________________________________________________________________________
 
 [9] License (MIT) applying to:
-    react@19.3.0
-    react-dom@19.3.0
+    react@19.3.1
+    react-dom@19.3.1
     scheduler@0.28.0
 
 MIT License
@@ -1257,7 +1257,7 @@ SOFTWARE.
 ________________________________________________________________________________
 
 [11] License (MIT) applying to:
-    zod@4.6.6
+    zod@4.6.7
 
 MIT License
 
