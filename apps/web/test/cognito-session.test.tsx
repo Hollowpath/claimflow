@@ -78,7 +78,9 @@ describe('Cognito sign-in screen', () => {
     expect(mocked.getSession).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: 'Sign in' }));
-    expect(navigate).toHaveBeenCalledTimes(1);
+    // Starting sign-in is asynchronous (it hashes the PKCE verifier first), so
+    // wait for the redirect instead of assuming it happened during the click.
+    await waitFor(() => expect(navigate).toHaveBeenCalledTimes(1));
     expect(navigate.mock.calls[0]![0]).toContain(
       `${hostedUiUrl}/oauth2/authorize?`,
     );
