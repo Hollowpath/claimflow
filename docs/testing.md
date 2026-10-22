@@ -13,7 +13,7 @@ npm test -w @claimflow/api     # one workspace
 npm run check                  # format:check, typecheck, lint, and tests
 ```
 
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs, after `npm ci`: `npm run format:check`, `npm run typecheck`, `npm run lint`, `npm run test:coverage`, `npm test -w @claimflow/infrastructure`, `npm run build`, and `npm audit --omit=dev --audit-level=high`. The infrastructure workspace has no `test:coverage` script, so it is run explicitly rather than twice. CI has no deployment step. The workflow is configured but has not been recorded as passing on GitHub.
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs, after `npm ci`: `npm run format:check`, `npm run typecheck`, `npm run lint`, `npm run test:coverage`, `npm test -w @claimflow/infrastructure`, `npm run build`, and `npm audit --omit=dev --audit-level=high`. The infrastructure workspace has no `test:coverage` script, so it is run explicitly rather than twice. CI has no deployment step. The readiness record documents that a GitHub Actions run of this workflow passed on 22 October 2026 ([publication state](engineering-readiness.md#publication-state-22-october-2026)). That is recorded historical evidence, not a check repeated for this guide, and it describes that run only.
 
 **Coverage actually enforced.** Only the domain package has thresholds: 90% branches, functions, lines, and statements ([`packages/domain/vitest.config.ts`](../packages/domain/vitest.config.ts)). The other workspaces collect coverage without a threshold: `contracts` over `src`, `api` over `src` excluding `main.ts`, `reset-data.ts`, and `local-config.ts` ([`services/api/vitest.config.ts`](../services/api/vitest.config.ts)), and `web` over `src` excluding `main.tsx` ([`apps/web/vite.config.ts`](../apps/web/vite.config.ts)). A passing run is not a claim of security or cloud correctness.
 
@@ -81,7 +81,7 @@ Shared helpers: [`services/api/test/support.ts`](../services/api/test/support.ts
 
 - **Web:** every real web build runs a Vite plugin that finds each bundled npm package and installed version, fails the build naming any `package@version` missing from [`THIRD_PARTY_NOTICES.txt`](../THIRD_PARTY_NOTICES.txt), and only then emits the file. The completeness check is therefore exercised by building (`npm run build -w @claimflow/web`). [`notices.test.ts`](../apps/web/test/notices.test.ts) holds fast unit tests of the plugin logic with fake module ids and runs no production build; `release.test.ts` covers the release refusing output without the file.
 - **Lambda:** the infrastructure test checks that every synthesized Lambda asset contains an identical copy of the file, that the file lists every package esbuild bundles for the five handlers, and that the template does not mention the file.
-- **Limits:** nothing flags stale extra entries, the Lambda test mirrors rather than reuses CDK's esbuild invocation, and the deployed web files have not been republished with the notice. See [the readiness record](engineering-readiness.md).
+- **Limits:** nothing flags stale extra entries, the Lambda test mirrors rather than reuses CDK's esbuild invocation, and none of these tests exercises publication. The readiness record documents that the web files were republished with the notice and that it is publicly served (22 October 2026); that was a manual publication step recorded after the fact, not an automated check. See [the readiness record](engineering-readiness.md#publication-state-22-october-2026).
 
 ## Local end-to-end steps
 

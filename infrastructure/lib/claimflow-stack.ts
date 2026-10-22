@@ -75,8 +75,9 @@ export const CLAIMFLOW_JANITOR_FAILURE_QUEUE_NAME =
   'claimflow-receipt-janitor-failures';
 export const CLAIMFLOW_OUTBOX_SWEEPER_NAME = 'claimflow-outbox-sweeper';
 /**
- * CloudWatch alarms (docs/aws-architecture.md, section 4). Native metrics
- * only, standard resolution, no actions: they change state and nothing else.
+ * CloudWatch alarms (docs/aws-architecture.md, section 4). Standard
+ * resolution; native metrics plus the sweeper's Embedded Metric Format metric.
+ * Each alarm has an ALARM-only SNS action (no OK or insufficient-data actions).
  */
 export const CLAIMFLOW_ALARM_PREFIX = 'claimflow';
 /** Lambda errors and throttles, and queue depth: any occurrence is a fault. */
