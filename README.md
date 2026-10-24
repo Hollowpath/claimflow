@@ -1,6 +1,7 @@
 # ClaimFlow
 
 [![CI](https://github.com/Hollowpath/claimflow/actions/workflows/ci.yml/badge.svg)](https://github.com/Hollowpath/claimflow/actions/workflows/ci.yml)
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/Hollowpath/badge.svg)](https://hub.xerj.org/contributors/Hollowpath)
 
 ClaimFlow manages employee expense claims from submission to reimbursement. Employees record expenses and attach receipts, managers review and decide on the claims assigned to them, and finance administrators maintain category policy and mark approved claims as paid. Every accepted change is authorized on the server and recorded in a history whose entries are never edited. Deleting an eligible draft (one that was never submitted) deletes its history with it.
 
