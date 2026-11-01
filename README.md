@@ -7,6 +7,30 @@ ClaimFlow manages employee expense claims from submission to reimbursement. Empl
 
 **Live site:** [ClaimFlow on AWS](https://d3vq4pyeoivioy.cloudfront.net) (serverless, `ap-southeast-1`). Sign-in uses Amazon Cognito, and accounts are created by an administrator, so the site is not open to self-registration. **Local demo mode** (`npm run dev`, below) runs the same application on your machine with selectable sample users and JSON-file storage, needs no AWS account, and is for development and evaluation only. Sample identities, organizations, claims, and transactions anywhere in this project are fictional. See [AWS deployment](#aws-deployment) for how the two differ.
 
+This is a portfolio project, not a production system: see [Current limitations](#current-limitations) and the [portfolio readiness record](docs/engineering-readiness.md) for what has and has not been verified.
+
+## Screenshots
+
+| My claims                                                   | Claim detail with history                                                                |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| ![An employee's claim list](docs/screenshots/my-claims.png) | ![A paid claim with receipt and full history](docs/screenshots/claim-detail-history.png) |
+
+| Manager review queue                                           | Administrator category policy                                                    |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| ![A manager's review queue](docs/screenshots/review-queue.png) | ![Category limits and receipt thresholds](docs/screenshots/categories-admin.png) |
+
+Screenshots were captured from the application running in local demo mode with fictional sample users and claims. They are not from the deployed AWS site.
+
+## Engineering highlights
+
+- **Server-side authorization and an append-only history.** Every accepted change records who, when, the status change, and any comment; entries are never edited.
+- **Pure domain layer.** Lifecycle, authorization, policy, and receipt rules live in `packages/domain`, shared by the local and AWS runtimes.
+- **Ports and adapters.** One transport-neutral API handler runs behind `node:http` locally and in Lambda on AWS.
+- **Consistency.** Optimistic concurrency, idempotent retries, and transactional DynamoDB writes.
+- **Event-driven cleanup.** DynamoDB streams, an outbox, EventBridge, and SQS with a dead-letter queue remove receipts and purge draft history asynchronously.
+- **Infrastructure as code.** The AWS CDK (TypeScript) stack includes 17 CloudWatch alarms; deployments are manual.
+- **Testing and CI.** Automated tests per layer, and GitHub Actions for checks, build, and a production dependency audit. See [Testing](docs/testing.md) for what each layer does and does not prove.
+
 ## Capabilities
 
 - **Claims.** Employees create and edit draft claims, attach PDF, JPEG, or PNG receipts, and submit them for approval. Drafts may be incomplete; every required field and policy rule is checked on submission. A draft that was never submitted can be deleted.
