@@ -36,7 +36,7 @@ Recorded 22 October 2026 for the public repository (`main`). Individual checks c
 - **Ignore rules.** `.gitignore` excludes environment files, local data and receipts, dependencies, build output, and CDK output (confirmed by the 19 October audit).
 - **Vulnerability policy.** `SECURITY.md` covers the current `main` branch, asks for GitHub private vulnerability reporting with a minimal-issue fallback, and states that ClaimFlow is a demonstration, not a supported service.
 - **Dependency-update automation.** `.github/dependabot.yml` covers npm and GitHub Actions monthly, groups minor and patch npm updates and Actions updates, keeps major npm updates separate, limits open pull requests, and enables no automatic merging. It has since produced pull requests (for example #1 and #2), which pass through the `Protect main` ruleset and CI like any other change.
-- **Public wording (repository side).** On 22 October 2026 the README, API guide, OpenAPI specification, domain model, local-development guide, architecture document, testing guide, infrastructure README, `SECURITY.md`, and this record were reviewed for contradictions, stale future-state wording, and exaggerated production, security, or verification claims. Corrections were made, none of these documents calls history "immutable" any more, and none claims production readiness, a service level, or compliance. The repository description on GitHub is the only part not covered (see Remaining items).
+- **Public wording (repository side).** On 22 October 2026 the README, API guide, OpenAPI specification, domain model, local-development guide, architecture document, testing guide, infrastructure README, `SECURITY.md`, and this record were reviewed for contradictions, stale future-state wording, and exaggerated production, security, or verification claims. Corrections were made, none of these documents calls history "immutable" any more, and none claims production readiness, a service level, or compliance. As of 22 October 2026, the repository description on GitHub was the only part not covered (see Remaining items); the 1 November 2026 update records its later check.
 - **Final local validation (22 October 2026), before the commit and push.** `npm run check` (format, type-check, lint, and every workspace's tests), `npm run build`, `npm audit --omit=dev --audit-level=high` (no vulnerabilities), and `git diff --check` all passed, and the Gitleaks rerun matched the earlier result. The plain web build contains `THIRD_PARTY_NOTICES.txt` (identical to the root file) but no `config.json`, so it is not publishable; only `npm run release` produces a publishable `dist/`. A review of the full status and diff found no generated files, secrets, personal data, dependency changes, or unintended deletions outside the expected accumulated changes. This validated the local working tree; the GitHub run that followed is recorded under Publication state.
 - **Notices, licenses, install scripts, assets, secret scan.** See [Provenance review](#provenance-review).
 
@@ -46,8 +46,19 @@ Recorded 22 October 2026 for the public repository (`main`). Individual checks c
 
 ### Remaining items
 
-1. **Repository description.** The description (and any website URL) on the GitHub repository page is not recorded here as checked.
+1. **Repository description.** As of 22 October 2026, the description (and any website URL) on the GitHub repository page was not recorded here as checked. The [1 November 2026 update](#repository-publication-update-1-november-2026) records a later check of both; this item is kept as the October record.
 2. **Later changes.** The final Gitleaks history scan covered every reachable ref and included the merged Dependabot #1 and #2 changes. Only this readiness edit and future changes occurred after that scan. Going forward changes pass through CI, the `Protect main` ruleset, secret scanning, and push protection. Rerun Gitleaks after significant changes, and expect the four idempotency-key fixture lines to be reported again unless an allowlist is chosen.
+
+### Repository publication update (1 November 2026)
+
+This update records repository-presentation work only. It does not repeat or replace any October 2026 verification, and no check recorded above was performed again.
+
+- **Pull request.** PR #9 was merged as `0df4ddddcfa861231e91c90b500b5b5c04359de1`. It changed only `README.md` and four screenshots under `docs/screenshots/`.
+- **Release.** GitHub release `v1.0.0` points to that commit.
+- **CI.** The GitHub Actions run on `main` for that commit, run `41268008352`, succeeded.
+- **GitHub presentation, checked.** The repository description, the CloudFront homepage URL (which responded), and ten GitHub topics (`aws`, `serverless`, `typescript`, `react`, `nodejs`, `aws-lambda`, `dynamodb`, `amazon-cognito`, `aws-cdk`, `event-driven-architecture`) were verified. This closes the "Repository description" item above for the state on that date.
+- **Screenshots.** The four screenshots were captured from the application in local demo mode with fictional sample data. They are not from the AWS deployment and are not deployment evidence.
+- **Not changed.** No application code, infrastructure, dependencies, or AWS resources changed. The release is a portfolio release, not a claim of production readiness.
 
 ## Deployment and operations evidence
 
