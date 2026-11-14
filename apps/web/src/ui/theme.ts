@@ -7,13 +7,16 @@ export const systemFontStack =
 /**
  * The single Material UI theme. Both colour schemes are generated as CSS
  * variables and the default mode is `system`, so the interface follows the
- * operating system's light or dark preference without a script or a flash.
+ * operating system's light or dark preference until a choice is made.
  * Primary is a restrained deep blue: dark enough for white text and for text
  * on white in light mode, light enough for text on the dark surface in dark
  * mode. Everything else is Material UI's default.
  */
 export const theme = createTheme({
-  cssVariables: true,
+  // A scheme is activated through a `data-mui-color-scheme` attribute on the
+  // document element, so an explicit choice overrides the operating system.
+  // The default `media` selector would follow the system only.
+  cssVariables: { colorSchemeSelector: 'data-mui-color-scheme' },
   colorSchemes: {
     light: {
       palette: {

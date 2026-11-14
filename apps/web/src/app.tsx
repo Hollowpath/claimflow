@@ -45,9 +45,12 @@ export function App() {
 }
 
 function SignedInRoutes() {
-  const { user, authMode } = useSession();
+  const { user, authMode, accountNotConfigured } = useSession();
   if (user === null) {
-    return authMode === 'cognito' ? <SignIn /> : <ChooseUser />;
+    if (authMode !== 'cognito') {
+      return <ChooseUser />;
+    }
+    return accountNotConfigured ? <AccountNotConfigured /> : <SignIn />;
   }
 
   // Keyed by user so switching users remounts every page and drops their data.
@@ -131,6 +134,35 @@ function SignIn() {
           <Box>
             <Button variant="contained" onClick={() => void start()}>
               Sign in
+            </Button>
+          </Box>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Signed in with Cognito, but the account has no ClaimFlow profile. Says so
+ * plainly, without account details, and offers the way out.
+ */
+function AccountNotConfigured() {
+  const { signOut } = useSession();
+  return (
+    <Card variant="outlined" sx={{ maxWidth: 480, mx: 'auto' }}>
+      <CardContent>
+        <Stack spacing={2}>
+          <Typography variant="h5" component="h1">
+            Account not set up for ClaimFlow
+          </Typography>
+          <Alert severity="warning">
+            You signed in successfully, but this account is not set up to use
+            ClaimFlow yet. Ask your administrator to set it up, then sign in
+            again.
+          </Alert>
+          <Box>
+            <Button variant="outlined" onClick={() => void signOut()}>
+              Sign out
             </Button>
           </Box>
         </Stack>
