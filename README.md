@@ -28,6 +28,7 @@ Screenshots were captured from the application running in local demo mode with f
 - **Ports and adapters.** One transport-neutral API handler runs behind `node:http` locally and in Lambda on AWS.
 - **Consistency.** Optimistic concurrency, idempotent retries, and transactional DynamoDB writes.
 - **Event-driven cleanup.** DynamoDB streams, an outbox, EventBridge, and SQS with a dead-letter queue remove receipts and purge draft history asynchronously.
+- **Interface.** A responsive Material UI interface with persistent system, light, and dark colour modes, managed keyboard focus, and larger touch targets on coarse-pointer devices (not a formal accessibility claim).
 - **Infrastructure as code.** The AWS CDK (TypeScript) stack includes 17 CloudWatch alarms; deployments are manual.
 - **Testing and CI.** Automated tests per layer, and GitHub Actions for checks, build, and a production dependency audit. See [Testing](docs/testing.md) for what each layer does and does not prove.
 
@@ -198,7 +199,7 @@ npm run build
 **AWS deployment**
 
 - It uses the default CloudFront domain, with no custom domain or WAF.
-- The browser verification (below) covers a limited set of flows. The receipt janitor and the scheduled outbox sweeper have not been separately verified against the deployed environment.
+- The manual browser verifications (below) cover a limited set of flows, and no automated test exercises the deployed environment. The receipt janitor and the scheduled outbox sweeper have not been separately verified against the deployed environment. The hosted Cognito sign-in page has not been checked at about 390 px width or for its error styling; Cognito controls its font and grey surround, and it has no ClaimFlow logo or name and no dark mode.
 - Deployments are manual and never run automatically.
 
 ## AWS deployment
@@ -215,6 +216,8 @@ The AWS deployment is a serverless stack in `ap-southeast-1`, defined as code in
 
 **Verified on 21 October 2026**, in a browser against the deployed environment: the runtime configuration loads; Cognito PKCE sign-in and the callback work; the protected session, claim list, and claim detail requests succeed; receipt upload, download, replacement, and removal work; and the replaced and removed receipts' S3 objects were deleted asynchronously, with all four ClaimFlow queues empty afterwards. That cleanup evidence supports the publisher → EventBridge → cleanup-worker path only. The alarm email subscription was confirmed, and a manual `claimflow-api-errors` ALARM transition delivered an email. This was a manual check of those flows only, not an automated test; the dated evidence and its limits are in [the testing guide](docs/testing.md#manual-aws-browser-verification) and [the AWS architecture](docs/aws-architecture.md#verified-deployed-state).
 
+**Verified on 14 November 2026**, manually, in a browser against the deployed site, using fictional data, in three stages. (1) Before PR #18, on the deployed redesign build: a claim went through rejection, resubmission, approval, and payment, and category and receipt workflows were exercised in the interface. (2) After PR #18, on the final `v1.1.0` bundle at commit `5d7b8ed`: the Employee, Manager, and Administrator accounts showed the expected identity, navigation, and landing page, theme switching visibly changed the palette and persisted across reloads, and there were no console errors. (3) After PR #19, with the Cognito classic hosted-UI branding deployed: the branded desktop sign-in returned through the callback to an Employee session with My claims loaded. The full lifecycle was not rerun on the final bundle. These checks do not supersede the 21 October evidence above, and they are recorded with their limits in [the testing guide](docs/testing.md#manual-aws-browser-verification) and [the AWS architecture](docs/aws-architecture.md#verified-deployed-state).
+
 The AWS adapters and services are also covered by automated tests that use fake AWS dependencies; those tests do not exercise real AWS.
 
 ## Documentation
@@ -225,7 +228,6 @@ The AWS adapters and services are also covered by automated tests that use fake 
 - [AWS architecture](docs/aws-architecture.md) and [infrastructure README](infrastructure/README.md)
 - [Testing](docs/testing.md)
 - [Portfolio readiness record](docs/engineering-readiness.md) and [security policy](SECURITY.md)
-- [Collaboration playbook](docs/collaboration-playbook.md): the project's scoped AI-assisted development and review process
 - [Third-party notices](THIRD_PARTY_NOTICES.txt)
 
 ## License

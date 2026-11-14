@@ -64,7 +64,7 @@ Shared helpers: [`services/api/test/support.ts`](../services/api/test/support.ts
 
 ### Synthesized infrastructure
 
-[`claimflow-stack.test.ts`](../infrastructure/test/claimflow-stack.test.ts) synthesizes the stack, which bundles every Lambda with esbuild, and asserts on the template. It checks the exact resource set and settings, the absence of resources the design excludes, the IAM policy of each function role (including that nothing gains a CloudWatch permission), the HTTP API routes against the application's route table, the JWT authorizer, CORS, and throttling, the 17 alarms and their ALARM-only actions, the SNS topic policy, and the required `NoEcho` email parameter. These tests check the template, not deployed behavior.
+[`claimflow-stack.test.ts`](../infrastructure/test/claimflow-stack.test.ts) synthesizes the stack, which bundles every Lambda with esbuild, and asserts on the template. It checks the exact resource set and settings, the absence of resources the design excludes, the IAM policy of each function role (including that nothing gains a CloudWatch permission), the HTTP API routes against the application's route table, the JWT authorizer, CORS, and throttling, the 17 alarms and their ALARM-only actions, the SNS topic policy, the required `NoEcho` email parameter, and the classic hosted UI styling attached to the web client (its CSS uses the ClaimFlow palette and only selectors on the classic allowlist). These tests check the template, not deployed behavior.
 
 ### Web
 
@@ -106,9 +106,30 @@ This is a dated manual check, not an automated test: nothing in the repository r
 - receipt removal worked: the claim went to version 5 with no attached receipt and a "Removed receipt" history entry, the final S3 receipt object was deleted asynchronously, and all four ClaimFlow queues were empty afterwards;
 - the alarm email subscription was confirmed, and a manual `claimflow-api-errors` ALARM transition delivered an email.
 
+**14 November 2026**, in a browser against the deployed environment, using fictional data only, in three stages.
+
+Before PR #18, on the deployed redesign build:
+
+- a claim went through the full lifecycle (rejection, resubmission, approval, and payment), and category and receipt workflows were exercised in the interface; the test category and a Paid test claim with a receipt remain in the deployed data.
+
+After PR #18, on the final `v1.1.0` bundle at commit `5d7b8ed` (`/assets/index-BwfA4CXF.js`):
+
+- the Employee, Manager, and Administrator accounts each showed the expected identity, navigation, and landing page (My claims; Review queue; All claims and Categories);
+- theme switching visibly changed the palette and persisted across reloads, and there were no console errors.
+
+The full lifecycle was not rerun on the final bundle.
+
+After PR #19, with the hosted UI branding deployed:
+
+- on desktop, the Cognito classic sign-in page showed the white card and inputs, the `#1e40af` banner, a `#1e40af` submit button with white bold text, a darker hover state, and a 2 px blue border on a keyboard-focused input;
+- Employee sign-in returned through the callback to ClaimFlow, which showed Demo Employee and loaded My claims without browser console errors, and no claim was changed;
+- after sign-out, the next sign-in attempt loaded the branded page again.
+
+The hosted page at about 390 px width and its error-message styling were not verified. Cognito still supplies the Arial font and the grey area around the card, and there is no ClaimFlow logo or name and no dark mode.
+
 **Limits.**
 
 - The asynchronous deletions support the publisher → EventBridge → cleanup-worker path only. The receipt janitor, the scheduled outbox sweeper, and the S3 lifecycle rule were not separately verified.
 - No OK action is configured, so the return to OK was neither notified nor exercised.
-- Only the flows listed above are recorded as verified; other flows, such as review, payment, and category administration, have no recorded browser verification.
+- Only the flows listed above are recorded as verified. As of 21 October 2026, review, payment, and category administration had no recorded browser verification; the 14 November 2026 entry above records a later check of those flows, which is not a rerun of the October checks.
 - Accessibility, security headers, load, and recovery were not tested, and the check is not automated or repeatable from the repository.
