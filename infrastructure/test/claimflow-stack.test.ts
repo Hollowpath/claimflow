@@ -25,6 +25,7 @@ import {
   CLAIMFLOW_RECEIPT_JANITOR_NAME,
   CLAIMFLOW_EVENT_BUS_NAME,
   CLAIMFLOW_EVENT_SOURCE,
+  CLAIMFLOW_HOSTED_UI_CSS,
   CLAIMFLOW_REGION,
   CLAIMFLOW_STACK_DESCRIPTION,
   ClaimFlowStack,
@@ -157,6 +158,7 @@ describe('ClaimFlowStack', () => {
           DISTRIBUTION_TYPE,
           CLIENT_TYPE,
           DOMAIN_TYPE,
+          'AWS::Cognito::UserPoolUICustomizationAttachment',
           EVENT_BUS_TYPE,
           RULE_TYPE,
           QUEUE_TYPE,
@@ -213,7 +215,6 @@ describe('ClaimFlowStack', () => {
       'AWS::Cognito::UserPoolGroup',
       'AWS::Cognito::UserPoolIdentityProvider',
       'AWS::Cognito::UserPoolResourceServer',
-      'AWS::Cognito::UserPoolUICustomizationAttachment',
       'AWS::Cognito::ManagedLoginBranding',
       'AWS::ApiGateway::RestApi',
       'AWS::SES::EmailIdentity',
@@ -2184,12 +2185,66 @@ describe('ClaimFlowStack', () => {
       });
     });
 
-    it('has no managed login branding or custom hosted UI styling', () => {
+    it('has no managed login branding', () => {
       template.resourceCountIs('AWS::Cognito::ManagedLoginBranding', 0);
-      template.resourceCountIs(
+    });
+
+    it('styles the classic hosted UI for the web client only', () => {
+      const attachments = template.findResources(
         'AWS::Cognito::UserPoolUICustomizationAttachment',
-        0,
       );
+      expect(Object.keys(attachments)).toHaveLength(1);
+      const attachment = Object.values(attachments)[0] as TableResource;
+      expect(attachment.Properties).toEqual({
+        UserPoolId: { Ref: userPoolLogicalId },
+        ClientId: { Ref: webClientLogicalId },
+        CSS: CLAIMFLOW_HOSTED_UI_CSS,
+      });
+      expect(Object.values(attachments)[0]).toMatchObject({
+        DependsOn: [domainLogicalId],
+      });
+    });
+
+    it('uses the ClaimFlow palette and only supported hosted UI CSS', () => {
+      expect(CLAIMFLOW_HOSTED_UI_CSS).toMatch(
+        /\.submitButton-customizable \{[^}]*background-color: #1e40af/,
+      );
+      const focus = /\.inputField-customizable:focus \{([^}]*)\}/.exec(
+        CLAIMFLOW_HOSTED_UI_CSS,
+      )?.[1];
+      expect(focus).toContain('border: 2px solid #1e40af;');
+      expect(focus).toContain('outline: 0;');
+      expect(CLAIMFLOW_HOSTED_UI_CSS).not.toMatch(/outline:\s*\d+px\s*;/);
+      expect(CLAIMFLOW_HOSTED_UI_CSS).not.toMatch(/@|gradient|!important/);
+      expect(CLAIMFLOW_HOSTED_UI_CSS.length).toBeLessThan(3000);
+      // AWS's classic hosted UI template: every selector it accepts.
+      const supported = [
+        '.background-customizable',
+        '.banner-customizable',
+        '.errorMessage-customizable',
+        '.idpButton-customizable',
+        '.idpButton-customizable:hover',
+        '.idpDescription-customizable',
+        '.inputField-customizable',
+        '.inputField-customizable:focus',
+        '.label-customizable',
+        '.legalText-customizable',
+        '.logo-customizable',
+        '.passwordCheck-valid-customizable',
+        '.passwordCheck-notValid-customizable',
+        '.redirect-customizable',
+        '.socialButton-customizable',
+        '.submitButton-customizable',
+        '.submitButton-customizable:hover',
+        '.textDescription-customizable',
+      ];
+      const selectors = [
+        ...CLAIMFLOW_HOSTED_UI_CSS.matchAll(/^(\.[^\s{]+)\s*\{/gm),
+      ].map((match) => match[1]);
+      expect(selectors.length).toBeGreaterThan(0);
+      for (const selector of selectors) {
+        expect(supported).toContain(selector);
+      }
     });
   });
 
