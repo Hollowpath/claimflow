@@ -38,6 +38,52 @@ export const CLAIMFLOW_PENDING_UPLOAD_PREFIX = 'uploads/pending/';
 
 export const CLAIMFLOW_WEB_CLIENT_NAME = 'ClaimFlowWeb';
 
+/**
+ * Classic hosted UI CSS, limited to the class names and properties the service
+ * accepts (no @media, so no dark mode; no font-family, so Cognito's own font).
+ * Colours match the web theme's light scheme: primary #1e40af, hover #162f84.
+ */
+export const CLAIMFLOW_HOSTED_UI_CSS = `.background-customizable {
+  background-color: #ffffff;
+}
+.banner-customizable {
+  background-color: #1e40af;
+  padding: 12px 12px 12px 12px;
+}
+.label-customizable {
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.87);
+}
+.textDescription-customizable {
+  color: rgba(0, 0, 0, 0.6);
+  font-size: 14px;
+}
+.inputField-customizable {
+  background-color: #ffffff;
+  color: rgba(0, 0, 0, 0.87);
+  border: 1px solid rgba(0, 0, 0, 0.23);
+  height: 40px;
+}
+.inputField-customizable:focus {
+  border: 2px solid #1e40af;
+  outline: 0;
+}
+.submitButton-customizable {
+  background-color: #1e40af;
+  color: #ffffff;
+  font-weight: bold;
+  height: 40px;
+  width: 100%;
+}
+.submitButton-customizable:hover {
+  background-color: #162f84;
+  color: #ffffff;
+}
+.errorMessage-customizable {
+  color: #d32f2f;
+}
+`;
+
 /** The Vite development server, which runs the web application locally. */
 export const CLAIMFLOW_LOCAL_WEB_ORIGIN = 'http://localhost:5173';
 
@@ -450,6 +496,19 @@ export class ClaimFlowStack extends cdk.Stack {
       cognitoDomain: { domainPrefix: `claimflow-${this.account}` },
       managedLoginVersion: cognito.ManagedLoginVersion.CLASSIC_HOSTED_UI,
     });
+
+    // Classic hosted UI styling for the web client only. The native resource
+    // accepts CSS (a logo image is not settable from CloudFormation).
+    const hostedUiBranding = new cognito.CfnUserPoolUICustomizationAttachment(
+      this,
+      'HostedUiBranding',
+      {
+        userPoolId: this.userPool.userPoolId,
+        clientId: this.webClient.userPoolClientId,
+        css: CLAIMFLOW_HOSTED_UI_CSS,
+      },
+    );
+    hostedUiBranding.node.addDependency(this.userPoolDomain);
 
     new cdk.CfnOutput(this, 'WebClientId', {
       description: 'Cognito app client ID of the web application',
