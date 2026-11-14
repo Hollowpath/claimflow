@@ -1,21 +1,23 @@
 import { claimStatuses, type ClaimStatus } from '@claimflow/contracts';
+import Box from '@mui/material/Box';
 import { useSearchParams } from 'react-router';
 
 import { api } from '../api/claimflow';
 import { ClaimList } from '../components/claim-list';
 import { statusLabels } from '../lib/format';
+import { SelectField } from '../ui/fields';
+import { PageHeader } from '../ui/page-header';
 
 export function ReviewQueuePage() {
   return (
     <>
-      <h1>Review queue</h1>
-      <p className="muted">
-        Claims assigned to you that are waiting for or under review, oldest
-        first.
-      </p>
+      <PageHeader
+        title="Review queue"
+        subtitle="Claims assigned to you that are waiting for or under review, oldest first."
+      />
       <ClaimList
         load={(cursor, signal) => api.listReviewQueue(cursor, signal)}
-        showEmployee
+        variant="review"
         emptyTitle="Nothing to review right now."
       />
     </>
@@ -32,31 +34,28 @@ export function AdminClaimsPage() {
 
   return (
     <>
-      <h1>All claims</h1>
-      <div className="tabs" role="group" aria-label="Filter by status">
-        <button
-          type="button"
-          aria-pressed={status === undefined}
-          onClick={() => choose(undefined)}
+      <PageHeader title="All claims" />
+      <Box sx={{ maxWidth: 280, mb: 2 }}>
+        <SelectField
+          id="status-filter"
+          label="Status"
+          size="small"
+          value={status ?? ''}
+          onChange={(value) => choose(claimStatuses.find((s) => s === value))}
         >
-          All
-        </button>
-        {claimStatuses.map((s) => (
-          <button
-            key={s}
-            type="button"
-            aria-pressed={status === s}
-            onClick={() => choose(s)}
-          >
-            {statusLabels[s]}
-          </button>
-        ))}
-      </div>
+          <option value="">All statuses</option>
+          {claimStatuses.map((s) => (
+            <option key={s} value={s}>
+              {statusLabels[s]}
+            </option>
+          ))}
+        </SelectField>
+      </Box>
       <ClaimList
         key={status ?? 'all'}
         load={(cursor, signal) => api.listAllClaims(status, cursor, signal)}
         deps={[status]}
-        showEmployee
+        variant="admin"
         emptyTitle={
           status === undefined
             ? 'There are no claims yet.'

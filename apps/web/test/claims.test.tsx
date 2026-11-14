@@ -48,12 +48,12 @@ describe('claim lists', () => {
       );
     const { user } = renderApp('/claims');
 
-    const list = await screen.findByRole('list', { name: 'Claims' });
-    expect(within(list).getByText('City Taxi')).toBeInTheDocument();
-    expect(within(list).getByText('RM 125.50')).toBeInTheDocument();
+    const table = await screen.findByRole('table', { name: 'My claims' });
+    expect(within(table).getByText('City Taxi')).toBeInTheDocument();
+    expect(within(table).getByText('RM 125.50')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Show more' }));
-    expect(await within(list).findByText('Hotel')).toBeInTheDocument();
+    expect(await within(table).findByText('Hotel')).toBeInTheDocument();
     expect(mocked.listMyClaims).toHaveBeenLastCalledWith('cursor-1', undefined);
     expect(
       screen.queryByRole('button', { name: 'Show more' }),
@@ -389,8 +389,13 @@ describe('receipts', () => {
     const { user } = renderApp('/claims/c-1');
 
     await user.click(await screen.findByRole('button', { name: 'Remove' }));
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Remove this receipt?',
+    });
     expect(mocked.removeReceipt).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Confirm remove' }));
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Remove receipt' }),
+    );
     expect(mocked.removeReceipt).toHaveBeenCalledWith('c-1', 2);
     expect(await screen.findByText('No receipt attached.')).toBeInTheDocument();
   });
@@ -436,8 +441,13 @@ describe('deleting drafts', () => {
     await user.click(
       await screen.findByRole('button', { name: 'Delete draft' }),
     );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Delete this draft?',
+    });
     expect(mocked.deleteClaim).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Delete draft' }),
+    );
 
     expect(mocked.deleteClaim).toHaveBeenCalledWith('c-1', 3);
     expect(

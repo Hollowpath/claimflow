@@ -47,8 +47,8 @@ describe('sign-in and navigation', () => {
   });
 
   it.each([
-    ['u-aisha', ['My claims', 'New claim']],
-    ['u-ben', ['My claims', 'New claim', 'Review queue']],
+    ['u-aisha', ['My claims']],
+    ['u-ben', ['My claims', 'Review queue']],
     ['u-chloe', ['Review queue']],
     ['u-dan', ['All claims', 'Categories']],
   ])('shows navigation for the roles of %s', async (userId, expected) => {
