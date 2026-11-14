@@ -37,4 +37,5 @@ afterEach(() => {
   sessionStorage.clear();
   // Material UI stores an explicit colour mode here.
   localStorage.clear();
+  document.documentElement.removeAttribute('data-mui-color-scheme');
 });

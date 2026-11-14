@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -44,12 +45,14 @@ function setup(tokenResponse: Response | Error) {
   return tokenFetch;
 }
 
-const renderApp = () =>
-  render(
+const renderApp = () => ({
+  user: userEvent.setup(),
+  ...render(
     <MemoryRouter>
       <App />
     </MemoryRouter>,
-  );
+  ),
+});
 
 describe('initial GET /session with Cognito sign-in', () => {
   it('shows the sign-in screen when the API rejects the token and the refresh fails', async () => {
@@ -114,6 +117,39 @@ describe('initial GET /session with Cognito sign-in', () => {
       screen.queryByRole('heading', { name: 'Sign in to ClaimFlow' }),
     ).not.toBeInTheDocument();
     expect(sessionStorage.getItem('claimflow.auth.tokens')).not.toBeNull();
+  });
+
+  it('explains an account without a ClaimFlow profile, and offers sign-out', async () => {
+    setup(json({}));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(json({ user: null, users: [] })),
+    );
+
+    const { user } = renderApp();
+
+    expect(
+      await screen.findByRole('heading', {
+        name: 'Account not set up for ClaimFlow',
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      /not set up to use ClaimFlow/i,
+    );
+    // Not the ordinary signed-out card, and nothing technical is shown.
+    expect(
+      screen.queryByRole('heading', { name: 'Sign in to ClaimFlow' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Sign in' })).toBeNull();
+    expect(document.body.textContent).not.toMatch(/access-1|refresh-1|token/i);
+    expect(sessionStorage.getItem('claimflow.auth.tokens')).not.toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Sign out' }));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Sign in to ClaimFlow' }),
+    ).toBeInTheDocument();
+    expect(sessionStorage.getItem('claimflow.auth.tokens')).toBeNull();
   });
 
   it('keeps the error screen and tokens when the network is down', async () => {

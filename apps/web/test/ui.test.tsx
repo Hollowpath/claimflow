@@ -40,13 +40,17 @@ describe('theme', () => {
     expect(Object.keys(colorSchemes).sort()).toEqual(['dark', 'light']);
   });
 
-  it('emits CSS variables for light and dark that follow the OS preference', () => {
+  it('scopes the light and dark CSS variables to the colour-scheme attribute', () => {
     renderUi(<p>themed</p>);
     const css = Array.from(document.querySelectorAll('style'))
       .map((style) => style.textContent)
       .join('\n');
     expect(css).toContain('--mui-palette-primary-main');
-    expect(css).toMatch(/prefers-color-scheme/);
+    // Selected by attribute, so an explicit choice beats the OS preference.
+    expect(css).toContain('[data-mui-color-scheme="dark"]');
+    expect(css).not.toMatch(
+      /@media \(prefers-color-scheme: dark\)\s*\{\s*:root/,
+    );
   });
 });
 

@@ -25,6 +25,11 @@ interface SessionContextValue {
   readonly authMode: 'local' | 'cognito';
   /** Why the last hosted UI sign-in did not complete, if it did not. */
   readonly authError: string | null;
+  /**
+   * Cognito accepted the sign-in but the account has no ClaimFlow profile, so
+   * the session has no user. Different from being signed out.
+   */
+  readonly accountNotConfigured: boolean;
   readonly selectUser: (userId: string) => Promise<void>;
   readonly signIn: () => Promise<void>;
   readonly signOut: () => Promise<void>;
@@ -40,6 +45,7 @@ type State =
       readonly status: 'ready';
       readonly session: SessionDto;
       readonly authError: string | null;
+      readonly accountNotConfigured?: boolean;
     };
 
 const signedOutSession: SessionDto = { user: null, users: [] };
@@ -69,7 +75,14 @@ export function SessionProvider({
   const load = useCallback(
     () =>
       api.getSession().then(
-        (session) => setState({ status: 'ready', session, authError: null }),
+        (session) =>
+          setState({
+            status: 'ready',
+            session,
+            authError: null,
+            // Valid tokens (the request was accepted) but no profile.
+            accountNotConfigured: auth !== null && session.user === null,
+          }),
         (error: unknown) => {
           const apiError = toApiError(error);
           // Rejected Cognito authentication (tokens already cleared) is a
@@ -166,6 +179,7 @@ export function SessionProvider({
       switching,
       authMode: auth === null ? 'local' : 'cognito',
       authError: state.authError,
+      accountNotConfigured: state.accountNotConfigured === true,
       selectUser,
       signIn,
       signOut,
