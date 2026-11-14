@@ -3,16 +3,28 @@ import {
   receiptContentTypes,
   type ClaimDto,
 } from '@claimflow/contracts';
-import { useRef, useState, type ChangeEvent } from 'react';
+import Alert from '@mui/material/Alert';
+import Button from '@mui/material/Button';
+import MuiLink from '@mui/material/Link';
+import Stack from '@mui/material/Stack';
+import Typography from '@mui/material/Typography';
+import { useState } from 'react';
 
 import type { ApiError } from '../api/client';
 import { api } from '../api/claimflow';
 import { formatDateTime, formatFileSize } from '../lib/format';
 import { toApiError } from '../lib/use-resource';
 import { useSession } from '../session';
+import { ConfirmDialog } from '../ui/confirm-dialog';
+import { FileButton } from '../ui/fields';
+import { Section } from '../ui/section';
 import { ErrorNotice } from './ui';
 
-/** View the receipt; the owner of a draft can also upload, replace, remove. */
+/**
+ * View the receipt; the owner of a draft can also upload, replace, remove. In
+ * Cognito mode the receipt is opened through the authenticated API, never a
+ * plain link, because the protected endpoint needs the access token.
+ */
 export function ReceiptPanel({
   claim,
   onChange,
@@ -23,11 +35,12 @@ export function ReceiptPanel({
   readonly onReload: () => void;
 }) {
   const { authMode } = useSession();
-  const input = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
+  const [removeError, setRemoveError] = useState<ApiError | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
   const { receipt } = claim;
   const editable = claim.permissions.canEdit;
 
@@ -43,26 +56,9 @@ export function ReceiptPanel({
     }
   }
 
-  async function run(action: () => Promise<ClaimDto>) {
-    setBusy(true);
-    setError(null);
-    try {
-      onChange(await action());
-    } catch (caught) {
-      setError(toApiError(caught));
-    } finally {
-      setBusy(false);
-      setConfirmingRemove(false);
-    }
-  }
-
-  function chooseFile(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = '';
+  function chooseFile(file: File) {
     setLocalError(null);
-    if (file === undefined) {
-      return;
-    }
+    setStatus(null);
     if (!(receiptContentTypes as readonly string[]).includes(file.type)) {
       setLocalError('Choose a PDF, JPEG, or PNG file.');
       return;
@@ -71,109 +67,148 @@ export function ReceiptPanel({
       setLocalError('Receipts must be between 1 byte and 10 MB.');
       return;
     }
-    void run(() => api.attachReceiptFile(claim.claimId, claim.version, file));
+    void attach(file);
+  }
+
+  async function attach(file: File) {
+    const replacing = receipt !== undefined;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await api.attachReceiptFile(claim.claimId, claim.version, file));
+      setStatus(replacing ? 'Receipt replaced.' : 'Receipt attached.');
+    } catch (caught) {
+      setError(toApiError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    setBusy(true);
+    setRemoveError(null);
+    try {
+      onChange(await api.removeReceipt(claim.claimId, claim.version));
+      setConfirmingRemove(false);
+      setStatus('Receipt removed.');
+    } catch (caught) {
+      setRemoveError(toApiError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function cancelRemove() {
+    setConfirmingRemove(false);
+    setRemoveError(null);
   }
 
   return (
-    <section className="panel" aria-labelledby="receipt-heading">
-      <h2 id="receipt-heading">Receipt</h2>
+    <Section id="receipt" title="Receipt">
       {receipt === undefined ? (
-        <p className="muted">No receipt attached.</p>
+        <Typography sx={{ color: 'text.secondary' }}>
+          No receipt attached.
+        </Typography>
       ) : (
-        <div className="receipt">
+        <Stack spacing={0.5} sx={{ mb: editable ? 2 : 0 }}>
           {authMode === 'cognito' ? (
-            <button
+            <MuiLink
+              component="button"
               type="button"
-              className="link-button"
               disabled={busy}
               onClick={() => void openReceipt()}
+              sx={{ alignSelf: 'flex-start', textAlign: 'left' }}
             >
               {receipt.fileName}
-            </button>
+            </MuiLink>
           ) : (
-            <a
+            <MuiLink
               href={api.receiptUrl(claim.claimId)}
               target="_blank"
               rel="noopener noreferrer"
+              sx={{ alignSelf: 'flex-start', overflowWrap: 'anywhere' }}
             >
               {receipt.fileName}
-            </a>
+            </MuiLink>
           )}
-          <span className="muted">
+          <Typography variant="body2" sx={{ color: 'text.secondary' }}>
             {formatFileSize(receipt.sizeBytes)} · added{' '}
             {formatDateTime(receipt.attachedAt)}
-          </span>
-        </div>
+          </Typography>
+        </Stack>
       )}
 
       {editable && (
-        <div className="receipt-actions">
-          <input
-            ref={input}
-            type="file"
-            accept={receiptContentTypes.join(',')}
-            className="visually-hidden"
-            id="receipt-file"
-            aria-label={
-              receipt === undefined ? 'Upload receipt' : 'Replace receipt'
-            }
-            onChange={chooseFile}
-            disabled={busy}
-          />
-          <button
-            type="button"
-            className="button button-secondary"
-            disabled={busy}
-            onClick={() => input.current?.click()}
+        <Stack spacing={1.5} sx={{ mt: receipt === undefined ? 2 : 0 }}>
+          <Stack
+            direction="row"
+            spacing={1}
+            useFlexGap
+            sx={{ flexWrap: 'wrap', alignItems: 'center' }}
           >
-            {busy
-              ? 'Working…'
-              : receipt === undefined
-                ? 'Upload receipt'
-                : 'Replace receipt'}
-          </button>
-          {receipt !== undefined &&
-            (confirmingRemove ? (
-              <>
-                <button
-                  type="button"
-                  className="button button-danger"
-                  disabled={busy}
-                  onClick={() =>
-                    void run(() =>
-                      api.removeReceipt(claim.claimId, claim.version),
-                    )
-                  }
-                >
-                  Confirm remove
-                </button>
-                <button
-                  type="button"
-                  className="link-button"
-                  onClick={() => setConfirmingRemove(false)}
-                >
-                  Keep it
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                className="link-button"
+            <FileButton
+              label={
+                receipt === undefined ? 'Upload receipt' : 'Replace receipt'
+              }
+              accept={receiptContentTypes.join(',')}
+              disabled={busy}
+              onFile={chooseFile}
+            />
+            {receipt !== undefined && (
+              <Button
+                color="error"
                 disabled={busy}
                 onClick={() => setConfirmingRemove(true)}
               >
                 Remove
-              </button>
-            ))}
-          <p className="hint">PDF, JPEG, or PNG up to 10 MB.</p>
-        </div>
+              </Button>
+            )}
+          </Stack>
+          <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+            PDF, JPEG, or PNG up to 10 MB.
+          </Typography>
+        </Stack>
+      )}
+
+      {busy && !confirmingRemove && (
+        <Typography role="status" sx={{ mt: 1.5 }}>
+          Working…
+        </Typography>
+      )}
+      {status !== null && !busy && (
+        <Typography role="status" sx={{ mt: 1.5 }}>
+          {status}
+        </Typography>
       )}
       {localError !== null && (
-        <p className="field-error" role="alert">
+        <Alert severity="error" sx={{ mt: 1.5 }}>
           {localError}
-        </p>
+        </Alert>
       )}
-      {error !== null && <ErrorNotice error={error} onReload={onReload} />}
-    </section>
+      {error !== null && (
+        <Stack sx={{ mt: 1.5 }}>
+          <ErrorNotice error={error} onReload={onReload} />
+        </Stack>
+      )}
+
+      {receipt !== undefined && (
+        <ConfirmDialog
+          open={confirmingRemove}
+          title="Remove this receipt?"
+          description={`${receipt.fileName} will be removed from this draft. You can attach another receipt afterwards.`}
+          confirmLabel="Remove receipt"
+          busyLabel="Removing…"
+          destructive
+          busy={busy}
+          error={removeError}
+          onReload={() => {
+            cancelRemove();
+            onReload();
+          }}
+          onConfirm={() => void remove()}
+          onCancel={cancelRemove}
+        />
+      )}
+    </Section>
   );
 }

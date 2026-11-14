@@ -1,5 +1,6 @@
 import type {
   ClaimAction,
+  ClaimDto,
   ClaimHistoryAction,
   ClaimStatus,
   Role,
@@ -62,6 +63,44 @@ export function formatDateTime(isoInstant: string): string {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+/**
+ * Who has the next move on a claim, in words. It only restates the documented
+ * lifecycle for the claim's current status; the server decides what is allowed.
+ */
+export function nextStepText(
+  claim: Pick<ClaimDto, 'status' | 'assignedManager'>,
+): string {
+  const manager = claim.assignedManager?.displayName ?? 'the manager';
+  switch (claim.status) {
+    case 'DRAFT':
+      return 'Complete the details and submit';
+    case 'SUBMITTED':
+      return `Waiting for ${manager} to start the review`;
+    case 'UNDER_REVIEW':
+      return `Being reviewed by ${manager}`;
+    case 'APPROVED':
+      return 'Waiting for payment';
+    case 'REJECTED':
+      return 'Reopen to edit and resubmit';
+    case 'PAID':
+      return 'Nothing further';
+  }
+}
+
+const dayMs = 24 * 60 * 60 * 1000;
+
+/** How long ago an instant was, in whole days: "Today", "1 day ago", "5 days ago". */
+export function formatAge(
+  isoInstant: string,
+  now: number = Date.now(),
+): string {
+  const days = Math.floor((now - new Date(isoInstant).getTime()) / dayMs);
+  if (Number.isNaN(days) || days <= 0) {
+    return 'Today';
+  }
+  return days === 1 ? '1 day ago' : `${days} days ago`;
 }
 
 export function formatFileSize(bytes: number): string {
